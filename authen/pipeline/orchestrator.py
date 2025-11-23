@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 from authen.export.excel import export_references_to_excel
 from authen.llm import ReferenceExtractor
@@ -68,6 +68,7 @@ class AuthenPipeline:
         self._chunk_total = 0
         self._chunk_completed = 0
         self._validation_completed = 0
+        self._validation_total = 0
 
     def run_from_pdf(self, pdf_path: str | Path) -> List[ReferenceData]:
         """Synchronous helper: extract text from PDF and run pipeline."""
@@ -89,18 +90,43 @@ class AuthenPipeline:
     ) -> List[ReferenceData]:
         if not text or not text.strip():
             return []
+        self._reset_counters()
         self._emit_status(
             f"Starting pipeline run from {source_label} | {len(text)} chars"
         )
-        references = await self._extract_references_async(text)
+        validation_queue: Optional[
+            asyncio.Queue[Optional[Tuple[int, ReferenceData]]]
+        ] = None
+        validation_task: Optional[asyncio.Task[None]] = None
+
+        if self.config.enable_validation:
+            validation_queue = asyncio.Queue()
+            validation_task = asyncio.create_task(
+                self._run_validation_consumer(validation_queue)
+            )
+
+        async def handle_reference_ready(reference: ReferenceData, index: int) -> None:
+            if not validation_queue:
+                return
+            await validation_queue.put((index, reference))
+
+        references: List[ReferenceData] = []
+        try:
+            references = await self._extract_references_async(
+                text,
+                on_reference_ready=handle_reference_ready if validation_queue else None,
+            )
+        finally:
+            if validation_queue:
+                await validation_queue.put(None)
+                if validation_task:
+                    await validation_task
         if not references:
             self._emit_status("No references detected during extraction.")
             return []
         if self._should_cancel():
             self._emit_status("Pipeline run cancelled before validation stage.")
             return references
-        if self.config.enable_validation:
-            await self._validate_and_enrich_async(references)
         self._emit_status(
             f"Pipeline completed with {len(references)} references after dedupe"
         )
@@ -114,7 +140,13 @@ class AuthenPipeline:
         """Write references to Excel using the shared exporter."""
         return export_references_to_excel(references, output_path)
 
-    async def _extract_references_async(self, text: str) -> List[ReferenceData]:
+    async def _extract_references_async(
+        self,
+        text: str,
+        on_reference_ready: Optional[
+            Callable[[ReferenceData, int], Awaitable[None]]
+        ] = None,
+    ) -> List[ReferenceData]:
         extractor = ReferenceExtractor(
             provider=self.config.provider,
             model_name=self.config.model_name,
@@ -134,77 +166,92 @@ class AuthenPipeline:
                 self._emit_status("Cancellation requested. Stopping extraction loop.")
                 break
             references.append(reference)
-            self._emit_reference(reference, len(references) - 1)
+            index = len(references) - 1
+            self._emit_reference(reference, index)
+            if self.config.enable_validation:
+                self._validation_total = len(references)
+                self._emit_progress({"validation_total": self._validation_total})
+            if on_reference_ready:
+                await on_reference_ready(reference, index)
             if not self.config.enable_validation:
-                self._emit_validation_state(len(references) - 1, "Skipped")
+                self._emit_validation_state(index, "Skipped")
         return references
 
-    async def _validate_and_enrich_async(
+    async def _run_validation_consumer(
         self,
-        references: Iterable[ReferenceData],
+        queue: asyncio.Queue[Optional[Tuple[int, ReferenceData]]],
     ) -> None:
-        references_list = (
-            references if isinstance(references, list) else list(references)
-        )
-        if not references_list:
-            return
-
         validator = AcademicValidator(log_callback=self._handle_validation_log)
-        self._emit_progress({"validation_total": len(references_list)})
-
-        for idx, reference in enumerate(references_list):
-            if self._should_cancel():
-                self._emit_status("Cancellation requested. Halting validation loop.")
+        while True:
+            payload = await queue.get()
+            if payload is None:
                 break
-            self._emit_validation_state(idx, "Validating")
-            authors_payload = [author.model_dump() for author in reference.authors]
-            result = await validator.validate_reference_details(
-                title=reference.title,
-                authors=authors_payload,
-                doi=reference.doi,
-                log_prefix=f"[Ref {idx + 1}] ",
-            )
-            if not result:
-                self._validation_completed += 1
-                self._emit_progress(
-                    {
-                        "validation_completed": self._validation_completed,
-                        "index": idx + 1,
-                    }
-                )
-                self._emit_validation_state(idx, "Failed")
-                continue
-            if result.logs:
-                reference.search_context = "\n".join(result.logs)
-            apply_reference_enrichment(reference, result.reference_metadata)
-            apply_author_enrichment(reference, result.author_metadata)
+            index, reference = payload
+            await self._validate_reference(validator, reference, index)
 
-            found_emails = (
-                extract_emails(reference.search_context)
-                if reference.search_context
-                else []
-            )
-            if found_emails:
-                enrich_authors_with_emails(reference, found_emails)
-
-            snapshot = {
-                "index": idx + 1,
-                "title": reference.title,
-                "reference_metadata": result.reference_metadata,
-                "author_metadata": result.author_metadata,
-                "logs": result.logs,
-                "emails": found_emails,
-            }
-            self._emit_validation_snapshot(snapshot)
-
+    async def _validate_reference(
+        self,
+        validator: AcademicValidator,
+        reference: ReferenceData,
+        index: int,
+    ) -> None:
+        if self._should_cancel():
+            self._emit_status("Cancellation requested. Halting validation loop.")
+            self._emit_validation_state(index, "Cancelled")
+            return
+        self._emit_validation_state(index, "Validating")
+        authors_payload = [author.model_dump() for author in reference.authors]
+        result = await validator.validate_reference_details(
+            title=reference.title,
+            authors=authors_payload,
+            doi=reference.doi,
+            log_prefix=f"[Ref {index + 1}] ",
+        )
+        if not result:
             self._validation_completed += 1
             self._emit_progress(
                 {
                     "validation_completed": self._validation_completed,
-                    "index": idx + 1,
+                    "index": index + 1,
                 }
             )
-            self._emit_validation_state(idx, "Validated")
+            self._emit_validation_state(index, "Failed")
+            return
+        if result.logs:
+            reference.search_context = "\n".join(result.logs)
+        apply_reference_enrichment(reference, result.reference_metadata)
+        apply_author_enrichment(reference, result.author_metadata)
+
+        found_emails = (
+            extract_emails(reference.search_context) if reference.search_context else []
+        )
+        if found_emails:
+            enrich_authors_with_emails(reference, found_emails)
+
+        snapshot = {
+            "index": index + 1,
+            "title": reference.title,
+            "reference_metadata": result.reference_metadata,
+            "author_metadata": result.author_metadata,
+            "logs": result.logs,
+            "emails": found_emails,
+        }
+        self._emit_validation_snapshot(snapshot)
+
+        self._validation_completed += 1
+        self._emit_progress(
+            {
+                "validation_completed": self._validation_completed,
+                "index": index + 1,
+            }
+        )
+        self._emit_validation_state(index, "Validated")
+
+    def _reset_counters(self) -> None:
+        self._chunk_total = 0
+        self._chunk_completed = 0
+        self._validation_completed = 0
+        self._validation_total = 0
 
     def _emit_status(self, message: str) -> None:
         if not message:
