@@ -151,17 +151,13 @@ def render_download_button(references: List[ReferenceData]):
         )
 
 
-def render_validation_debug(
-    search_logs: List[Dict[str, Any]], log_text: str, placeholder
-):
+def render_validation_debug(search_logs: List[Dict[str, Any]], placeholder):
     """Render debug information for academic validation inside a placeholder."""
     placeholder.empty()
     with placeholder.container():
-        if not search_logs and not log_text:
+        if not search_logs:
             st.info("Validation debug will appear here once available.")
             return
-        if log_text:
-            st.code(log_text.strip(), language=None)
         if search_logs:
             st.json(search_logs)
 
@@ -205,7 +201,11 @@ def run_app():
         st.session_state.ui_log = []
         st.rerun()
 
-    if st.sidebar.button("Cancel Processing", disabled=not st.session_state.processing):
+    cancel_clicked = st.sidebar.button(
+        "Cancel Processing",
+        help="Signal the pipeline to stop at the next safe checkpoint.",
+    )
+    if cancel_clicked:
         st.session_state.cancel_requested = True
 
     # Advanced settings
@@ -357,8 +357,18 @@ def run_app():
 
     logs_expander = st.expander("Logs & Debug", expanded=False)
     with logs_expander:
-        llm_tab, validation_tab, debug_tab = st.tabs(
-            ["LLM Processing", "Validation Logs", "Validation Debug"]
+        (
+            llm_tab,
+            raw_tab,
+            validation_tab,
+            debug_tab,
+        ) = st.tabs(
+            [
+                "LLM Logs",
+                "LLM Debug",
+                "Validation Logs",
+                "Validation Debug",
+            ]
         )
         with llm_tab:
             log_placeholder = st.empty()
@@ -366,6 +376,8 @@ def run_app():
             validation_log_placeholder = st.empty()
         with debug_tab:
             validation_debug_placeholder = st.empty()
+        with raw_tab:
+            raw_llm_placeholder = st.empty()
 
     def append_log(message: str):
         """Append a timestamped log message to the UI."""
@@ -419,12 +431,14 @@ def run_app():
                     )
 
     def render_raw_llm_output():
-        """Render raw LLM output within stable placeholders."""
+        """Render raw LLM output inside the debug tab."""
 
-        if st.session_state.raw_extraction_json:
-            with raw_llm_placeholder.container():
-                with st.expander("Debug: Raw LLM Extracted Data", expanded=False):
-                    st.json(st.session_state.raw_extraction_json)
+        raw_llm_placeholder.empty()
+        data = st.session_state.get("raw_extraction_json", [])
+        if data:
+            raw_llm_placeholder.json(data)
+        else:
+            raw_llm_placeholder.info("Raw LLM output will appear here once available.")
 
     def render_metrics_board():
         """Render key progress metrics."""
@@ -504,9 +518,9 @@ def run_app():
     render_validation_logs()
     render_validation_debug(
         st.session_state.get("search_logs", []),
-        st.session_state.get("validation_log_text", ""),
         validation_debug_placeholder,
     )
+    render_raw_llm_output()
 
     if process_clicked:
         st.session_state.processing = True
@@ -587,7 +601,6 @@ def run_app():
             st.session_state.search_logs.append(snapshot)
             render_validation_debug(
                 st.session_state.search_logs,
-                st.session_state.validation_log_text,
                 validation_debug_placeholder,
             )
 
@@ -666,7 +679,6 @@ def run_app():
                 render_raw_llm_output()
                 render_validation_debug(
                     st.session_state.search_logs,
-                    st.session_state.validation_log_text,
                     validation_debug_placeholder,
                 )
 
@@ -707,7 +719,6 @@ def run_app():
             )
             render_validation_debug(
                 st.session_state.search_logs,
-                st.session_state.validation_log_text,
                 validation_debug_placeholder,
             )
             with download_placeholder.container():
