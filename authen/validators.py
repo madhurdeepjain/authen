@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
 
@@ -20,7 +20,7 @@ class AcademicValidator:
     Provides both validation logs and structured metadata that can enrich results.
     """
 
-    def __init__(self):
+    def __init__(self, log_callback: Optional[Callable[[str], None]] = None):
         self.crossref_base = "https://api.crossref.org/works"
         self.pubmed_base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
         self.arxiv_base = "http://export.arxiv.org/api/query"
@@ -36,6 +36,7 @@ class AcademicValidator:
         self.arxiv_sem = asyncio.Semaphore(1)
         self.cache_dir = get_validation_cache_dir()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.log_callback = log_callback
 
     def _get_cache_key(
         self, title: Optional[str], doi: Optional[str], authors: List[dict]
@@ -95,6 +96,30 @@ class AcademicValidator:
             logger.info(f"Academic validation cached ({cache_key[:8]}...).")
         except Exception as exc:
             logger.warning(f"Failed to write validation cache {cache_path}: {exc}")
+
+    @staticmethod
+    def _emit_log(
+        emitter: Optional[Callable[[str], None]], message: str, prefix: str = ""
+    ) -> None:
+        if not emitter or not message:
+            return
+        formatted = f"{prefix}{message}" if prefix else message
+        try:
+            emitter(formatted)
+        except Exception:
+            logger.debug("Validation log callback failed", exc_info=True)
+
+    @classmethod
+    def _emit_logs(
+        cls,
+        emitter: Optional[Callable[[str], None]],
+        messages: List[str],
+        prefix: str = "",
+    ) -> None:
+        if not emitter or not messages:
+            return
+        for entry in messages:
+            cls._emit_log(emitter, entry, prefix)
 
     async def _safe_request(
         self,
@@ -423,23 +448,31 @@ class AcademicValidator:
             return logs, metadata
 
     async def validate_reference_details(
-        self, title: Optional[str], authors: List[dict], doi: Optional[str] = None
+        self,
+        title: Optional[str],
+        authors: List[dict],
+        doi: Optional[str] = None,
+        log_callback: Optional[Callable[[str], None]] = None,
+        log_prefix: str = "",
     ) -> AcademicValidationResult:
         """
         Perform comprehensive validation using academic databases and return
         both logs and any structured metadata discovered.
         """
         result = AcademicValidationResult()
+        emitter = log_callback or self.log_callback
         if not title and not doi:
             result.logs.append(
                 "Validation skipped: title or DOI required to query academic sources."
             )
+            self._emit_logs(emitter, result.logs, log_prefix)
             return result
 
         authors = authors or []
         cache_key = self._get_cache_key(title, doi, authors)
         cached = self._load_cached_validation(cache_key)
         if cached:
+            self._emit_logs(emitter, cached.logs, log_prefix)
             return cached
 
         async with aiohttp.ClientSession() as session:
@@ -476,9 +509,11 @@ class AcademicValidator:
                 if isinstance(res, tuple):  # crossref and openalex return tuples
                     logs, meta = res
                     result.logs.extend(logs)
+                    self._emit_logs(emitter, logs, log_prefix)
                     result.merge_reference_metadata(meta)
                 elif isinstance(res, list):  # others return lists
                     result.logs.extend(res)
+                    self._emit_logs(emitter, res, log_prefix)
 
             # Parallelize author validations
             author_tasks = []
@@ -505,11 +540,13 @@ class AcademicValidator:
                         continue
                     logs, meta = res
                     result.logs.extend(logs)
+                    self._emit_logs(emitter, logs, log_prefix)
                     normalized_name = normalize_author_key(first, last, fallback=name)
                     result.merge_author_metadata(normalized_name, meta or {})
 
         if not result.logs:
             result.logs.append("No academic validation signals were gathered.")
+            self._emit_logs(emitter, [result.logs[-1]], log_prefix)
 
         self._save_cached_validation(cache_key, result)
 

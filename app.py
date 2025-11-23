@@ -4,7 +4,7 @@ import asyncio
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -98,10 +98,14 @@ def render_provider_controls(provider: str) -> tuple[str, str]:
     return api_key_value, model_value
 
 
-def render_results_table(references: List[ReferenceData], placeholder):
-    """Render a table of extracted references."""
+def render_results_table(
+    references: List[ReferenceData],
+    placeholder,
+    validation_states: Optional[List[str]] = None,
+):
+    """Render a table of extracted references with optional validation states."""
     table_rows = []
-    for ref in references:
+    for idx, ref in enumerate(references):
         authors_summary = ", ".join(
             filter(
                 None,
@@ -111,12 +115,23 @@ def render_results_table(references: List[ReferenceData], placeholder):
                 ],
             )
         )
+        status_display = "—"
+        if validation_states and idx < len(validation_states):
+            state = validation_states[idx]
+            status_display = {
+                "Validated": "✅ Validated",
+                "Validating": "🔄 Validating",
+                "Pending": "⏳ Pending",
+                "Failed": "⚠️ Failed",
+                "Skipped": "—",
+            }.get(state, state or "—")
         table_rows.append(
             {
                 "Title": ref.title,
                 "Year": ref.year,
                 "DOI": ref.doi,
                 "Authors": authors_summary or "—",
+                "Validation": status_display,
             }
         )
     if table_rows:
@@ -141,11 +156,15 @@ def render_download_button(references: List[ReferenceData]):
         )
 
 
-def render_validation_debug(search_logs: List[Dict[str, Any]], log_text: str):
-    """Render debug information for academic validation."""
-    if not search_logs and not log_text:
-        return
-    with st.expander("Debug: Academic Validation Details", expanded=False):
+def render_validation_debug(
+    search_logs: List[Dict[str, Any]], log_text: str, placeholder
+):
+    """Render debug information for academic validation inside a placeholder."""
+    placeholder.empty()
+    with placeholder.container():
+        if not search_logs and not log_text:
+            st.info("Validation debug will appear here once available.")
+            return
         if log_text:
             st.code(log_text.strip(), language=None)
         if search_logs:
@@ -171,6 +190,9 @@ def main():
         "results": [],
         "search_logs": [],
         "validation_log_text": "",
+        "validation_states": [],
+        "chunk_progress": {"total": 0, "completed": 0},
+        "validation_progress": {"total": 0, "completed": 0},
         "status_message": "",
         "status_level": "info",
         "input_preview": "",
@@ -325,8 +347,30 @@ def main():
         disabled=not can_process or st.session_state.processing,
     )
 
-    log_container = st.expander("Live Processing Log", expanded=True)
-    log_placeholder = log_container.empty()
+    input_preview_placeholder = st.empty()
+    raw_llm_placeholder = st.empty()
+
+    dashboard_cols = st.columns([1.2, 1.8], gap="large")
+    with dashboard_cols[0]:
+        metrics_placeholder = st.empty()
+        chunk_progress_placeholder = st.empty()
+        validation_progress_placeholder = st.empty()
+        status_placeholder = st.empty()
+    with dashboard_cols[1]:
+        results_placeholder = st.empty()
+        download_placeholder = st.empty()
+
+    logs_expander = st.expander("Logs & Debug", expanded=False)
+    with logs_expander:
+        llm_tab, validation_tab, debug_tab = st.tabs(
+            ["LLM Processing", "Validation Logs", "Validation Debug"]
+        )
+        with llm_tab:
+            log_placeholder = st.empty()
+        with validation_tab:
+            validation_log_placeholder = st.empty()
+        with debug_tab:
+            validation_debug_placeholder = st.empty()
 
     def append_log(message: str):
         """Append a timestamped log message to the UI."""
@@ -335,13 +379,8 @@ def main():
         st.session_state.ui_log.append(entry)
         log_placeholder.code("\n".join(st.session_state.ui_log), language=None)
 
-    input_preview_placeholder = st.empty()
-    raw_llm_placeholder = st.empty()
-    progress_placeholder = st.empty()
-    validation_debug_placeholder = st.empty()
-    results_placeholder = st.empty()
-    status_placeholder = st.empty()
-    download_placeholder = st.empty()
+    if st.session_state.ui_log:
+        log_placeholder.code("\n".join(st.session_state.ui_log), language=None)
 
     def render_status_message():
         """Render the persisted status message if available."""
@@ -392,15 +431,104 @@ def main():
                 with st.expander("Debug: Raw LLM Extracted Data", expanded=False):
                     st.json(st.session_state.raw_extraction_json)
 
+    def render_metrics_board():
+        """Render key progress metrics."""
+        metrics_placeholder.empty()
+        with metrics_placeholder.container():
+            chunk_state = st.session_state.get("chunk_progress", {})
+            chunk_total = chunk_state.get("total", 0)
+            chunk_completed = chunk_state.get("completed", 0)
+            total_refs = len(st.session_state.get("results", []))
+            validated_refs = sum(
+                1
+                for state in st.session_state.get("validation_states", [])
+                if state == "Validated"
+            )
+            cols = st.columns(3)
+            cols[0].metric(
+                "Chunks",
+                f"{chunk_completed}/{chunk_total or '—'}",
+                delta=None,
+            )
+            cols[1].metric("References Extracted", total_refs)
+            cols[2].metric("References Validated", validated_refs)
+
+    def render_chunk_progress_bar():
+        """Render chunk progress bar."""
+        chunk_state = st.session_state.get("chunk_progress", {})
+        chunk_total = chunk_state.get("total", 0)
+        chunk_completed = chunk_state.get("completed", 0)
+        chunk_progress_placeholder.empty()
+        if chunk_total > 0:
+            chunk_progress_placeholder.progress(
+                min(chunk_completed / chunk_total, 1.0),
+                text=f"LLM Chunk Progress: {chunk_completed}/{chunk_total}",
+            )
+        else:
+            chunk_progress_placeholder.info("LLM chunk progress will appear here.")
+
+    def render_validation_progress_bar():
+        """Render validation progress bar."""
+        validation_state = st.session_state.get("validation_progress", {})
+        total = validation_state.get("total", 0)
+        completed = validation_state.get("completed", 0)
+        validation_progress_placeholder.empty()
+        if total > 0:
+            validation_progress_placeholder.progress(
+                min(completed / total, 1.0),
+                text=f"Validation Progress: {completed}/{total}",
+            )
+        else:
+            validation_progress_placeholder.info(
+                "Validation progress will appear once validation starts."
+            )
+
+    def refresh_progress_widgets():
+        """Refresh metrics and progress bars together."""
+        render_metrics_board()
+        render_chunk_progress_bar()
+        render_validation_progress_bar()
+
+    def render_validation_logs():
+        """Render validation log text into its placeholder."""
+        validation_log_placeholder.empty()
+        log_text = st.session_state.get("validation_log_text", "").strip()
+        if log_text:
+            validation_log_placeholder.code(log_text, language=None)
+        else:
+            validation_log_placeholder.info("Validation logs will appear here.")
+
+    def handle_validation_log(message: str):
+        """Append validation log messages and re-render the log viewer."""
+        existing = st.session_state.get("validation_log_text", "").strip()
+        combined = f"{existing}\n{message}".strip() if existing else message
+        st.session_state.validation_log_text = combined
+        render_validation_logs()
+
+    refresh_progress_widgets()
+    render_validation_logs()
+    render_validation_debug(
+        st.session_state.get("search_logs", []),
+        st.session_state.get("validation_log_text", ""),
+        validation_debug_placeholder,
+    )
+
     if process_clicked:
         st.session_state.processing = True
         st.session_state.cancel_requested = False
         st.session_state.ui_log = []
+        log_placeholder.empty()
         st.session_state.results = []
         st.session_state.search_logs = []
         st.session_state.validation_log_text = ""
+        st.session_state.validation_states = []
+        st.session_state.chunk_progress = {"total": 0, "completed": 0}
+        st.session_state.validation_progress = {"total": 0, "completed": 0}
+        st.session_state.raw_extraction_json = []
         download_placeholder.empty()
         validation_debug_placeholder.empty()
+        render_validation_logs()
+        refresh_progress_widgets()
         append_log("Initiating new extraction run.")
 
         if llm_provider != "ollama" and not api_key:
@@ -409,6 +537,17 @@ def main():
             )
             st.session_state.processing = False
             return
+
+        def handle_llm_progress(event: Dict[str, Any]):
+            """Capture chunk-level progress events from the LLM processor."""
+            event_type = event.get("event")
+            if event_type == "chunks_initialized":
+                st.session_state.chunk_progress["total"] = event.get("total", 0)
+                st.session_state.chunk_progress["completed"] = 0
+            elif event_type == "chunk_completed":
+                completed = st.session_state.chunk_progress.get("completed", 0) + 1
+                st.session_state.chunk_progress["completed"] = completed
+            refresh_progress_widgets()
 
         async def run_processing():
             try:
@@ -454,23 +593,42 @@ def main():
                     enable_web_search=enable_web_search_llm,
                     academic_domains=academic_domains or None,
                     event_logger=append_log,
+                    progress_callback=handle_llm_progress,
                 )
 
                 # Initialize validator if enabled
                 validator = AcademicValidator() if enable_cross_validate else None
 
                 async def validate_ref(ref, idx):
-                    authors_payload = [author.model_dump() for author in ref.authors]
-                    validation_result = await validator.validate_reference_details(
-                        title=ref.title,
-                        authors=authors_payload,
-                        doi=ref.doi,
-                    )
-                    return validation_result, ref, idx
+                    if not validator:
+                        return {"result": None, "ref": ref, "idx": idx, "error": None}
+                    try:
+                        authors_payload = [
+                            author.model_dump() for author in ref.authors
+                        ]
+                        validation_result = await validator.validate_reference_details(
+                            title=ref.title,
+                            authors=authors_payload,
+                            doi=ref.doi,
+                            log_callback=handle_validation_log,
+                            log_prefix=f"[Ref {idx + 1}] ",
+                        )
+                        return {
+                            "result": validation_result,
+                            "ref": ref,
+                            "idx": idx,
+                            "error": None,
+                        }
+                    except Exception as exc:
+                        logger.error(f"Validation failed for ref {idx + 1}: {exc}")
+                        handle_validation_log(
+                            f"[Ref {idx + 1}] Validation failed: {exc}"
+                        )
+                        return {"result": None, "ref": ref, "idx": idx, "error": exc}
 
                 # Extract references using LLM
+                cancelled = False
                 with st.spinner("Chunking document and prompting the LLM..."):
-                    extracted_refs = []
                     validation_tasks = []
                     idx = 0
                     async for ref in processor.extract_references(
@@ -478,72 +636,76 @@ def main():
                         chunk_size=chunk_size_chars,
                         overlap=effective_overlap,
                     ):
-                        extracted_refs.append(ref)
+                        if st.session_state.cancel_requested:
+                            cancelled = True
+                            append_log(
+                                "Cancellation requested. Halting extraction loop."
+                            )
+                            break
+                        st.session_state.results.append(ref)
+                        st.session_state.raw_extraction_json.append(ref.model_dump())
+                        state_label = "Pending" if enable_cross_validate else "Skipped"
+                        st.session_state.validation_states.append(state_label)
+                        render_results_table(
+                            st.session_state.results,
+                            results_placeholder,
+                            st.session_state.validation_states,
+                        )
+                        refresh_progress_widgets()
+                        update_status_message(
+                            f"Extracted {len(st.session_state.results)} references so far...",
+                            level="info",
+                        )
                         if enable_cross_validate and validator:
+                            st.session_state.validation_states[idx] = "Validating"
+                            st.session_state.validation_progress["total"] += 1
                             task = asyncio.create_task(validate_ref(ref, idx))
                             validation_tasks.append(task)
+                            refresh_progress_widgets()
                         idx += 1
 
                 append_log(
-                    f"LLM returned {len(extracted_refs)} references before filtering."
+                    f"LLM returned {len(st.session_state.results)} references before filtering."
                 )
-                if not extracted_refs:
+                if not st.session_state.results:
                     st.warning(
                         "No references detected. Try adjusting chunk size or input quality."
                     )
                     return
 
-                st.session_state.raw_extraction_json = [
-                    ref.model_dump() for ref in extracted_refs
-                ]
                 render_raw_llm_output()
 
-                # Process and enrich each reference
-                progress_bar = progress_placeholder.progress(0)
-                results: List[ReferenceData] = []
-                search_logs: List[Dict[str, Any]] = []
-                total_refs = len(extracted_refs)
-                processed_count = 0
-                cancelled = False
-
-                if enable_cross_validate and validator:
+                if enable_cross_validate and validator and validation_tasks:
                     with st.spinner(
                         "Enriching references and applying academic validation..."
                     ):
-                        validation_results = await asyncio.gather(
-                            *validation_tasks, return_exceptions=True
-                        )
-                        for res in validation_results:
-                            if isinstance(res, Exception):
-                                logger.error(f"Validation failed: {res}")
+                        for task in asyncio.as_completed(validation_tasks):
+                            result_payload = await task
+                            idx = result_payload["idx"]
+                            ref = result_payload["ref"]
+                            validation_result = result_payload["result"]
+                            error = result_payload["error"]
+
+                            st.session_state.validation_progress["completed"] += 1
+                            refresh_progress_widgets()
+
+                            if error or not validation_result:
+                                st.session_state.validation_states[idx] = "Failed"
+                                render_results_table(
+                                    st.session_state.results,
+                                    results_placeholder,
+                                    st.session_state.validation_states,
+                                )
                                 continue
-                            validation_result, ref, idx = res
-                            processed_count += 1
+
                             update_status_message(
-                                f"Processing reference {processed_count}/{total_refs}: {ref.title or 'Unknown Title'}",
+                                f"Validated reference {idx + 1}: {ref.title or 'Untitled'}",
                                 level="info",
                             )
 
-                            # Update validation logs
                             if validation_result.logs:
-                                validation_log_text = (
-                                    st.session_state.validation_log_text
-                                    + (
-                                        "\n".join(
-                                            [
-                                                f"[{processed_count}/{total_refs}] {entry}"
-                                                for entry in validation_result.logs
-                                            ]
-                                        )
-                                        + "\n"
-                                    )
-                                )
-                                st.session_state.validation_log_text = (
-                                    validation_log_text
-                                )
-                            ref.search_context = "\n".join(validation_result.logs)
+                                ref.search_context = "\n".join(validation_result.logs)
 
-                            # Apply enrichment
                             apply_reference_enrichment(
                                 ref, validation_result.reference_metadata
                             )
@@ -551,7 +713,6 @@ def main():
                                 ref, validation_result.author_metadata
                             )
 
-                            # Extract and assign emails
                             found_emails = (
                                 extract_emails(ref.search_context)
                                 if ref.search_context
@@ -560,32 +721,34 @@ def main():
                             if found_emails:
                                 enrich_authors_with_emails(ref, found_emails)
 
-                            search_logs.append(
-                                {
-                                    "index": processed_count,
-                                    "title": ref.title,
-                                    "reference_metadata": validation_result.reference_metadata,
-                                    "author_metadata": validation_result.author_metadata,
-                                    "logs": validation_result.logs,
-                                    "emails": found_emails,
-                                }
+                            search_entry = {
+                                "index": idx + 1,
+                                "title": ref.title,
+                                "reference_metadata": validation_result.reference_metadata,
+                                "author_metadata": validation_result.author_metadata,
+                                "logs": validation_result.logs,
+                                "emails": found_emails,
+                            }
+                            st.session_state.search_logs.append(search_entry)
+                            render_validation_debug(
+                                st.session_state.search_logs,
+                                st.session_state.validation_log_text,
+                                validation_debug_placeholder,
                             )
-                            with validation_debug_placeholder.container():
-                                render_validation_debug(
-                                    search_logs, st.session_state.validation_log_text
-                                )
 
-                            results.append(ref)
-                            progress_bar.progress(
-                                min(processed_count / total_refs, 1.0)
+                            st.session_state.results[idx] = ref
+                            st.session_state.validation_states[idx] = "Validated"
+                            render_results_table(
+                                st.session_state.results,
+                                results_placeholder,
+                                st.session_state.validation_states,
                             )
-                            render_results_table(results, results_placeholder)
                 else:
-                    # No validation, just add refs
-                    results = extracted_refs
-
-                st.session_state.results = results
-                st.session_state.search_logs = search_logs
+                    render_validation_debug(
+                        st.session_state.search_logs,
+                        st.session_state.validation_log_text,
+                        validation_debug_placeholder,
+                    )
 
                 if cancelled:
                     update_status_message(
@@ -597,20 +760,15 @@ def main():
                         "Extraction and validation complete.", level="success"
                     )
 
-                with validation_debug_placeholder.container():
-                    render_validation_debug(
-                        search_logs, st.session_state.validation_log_text
+                if st.session_state.results:
+                    append_log(
+                        f"Exported {len(st.session_state.results)} references to Excel."
                     )
-
-                if results:
-                    append_log(f"Exported {len(results)} references to Excel.")
                     with download_placeholder.container():
-                        render_download_button(results)
-                progress_placeholder.empty()
+                        render_download_button(st.session_state.results)
             finally:
                 st.session_state.processing = False
                 st.session_state.cancel_requested = False
-                progress_placeholder.empty()
 
         asyncio.run(run_processing())
 
@@ -622,11 +780,16 @@ def main():
                 render_status_message()
             render_input_preview()
             render_raw_llm_output()
-            render_results_table(st.session_state.results, results_placeholder)
-            with validation_debug_placeholder.container():
-                render_validation_debug(
-                    st.session_state.search_logs, st.session_state.validation_log_text
-                )
+            render_results_table(
+                st.session_state.results,
+                results_placeholder,
+                st.session_state.validation_states,
+            )
+            render_validation_debug(
+                st.session_state.search_logs,
+                st.session_state.validation_log_text,
+                validation_debug_placeholder,
+            )
             with download_placeholder.container():
                 render_download_button(st.session_state.results)
 

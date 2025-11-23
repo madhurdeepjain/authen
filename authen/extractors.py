@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import AsyncIterator, Callable, List, Optional
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
@@ -51,6 +51,7 @@ class LLMProcessor:
         enable_web_search=False,
         academic_domains: Optional[List[str]] = None,
         event_logger: Optional[Callable[[str], None]] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         cache_dir: Optional[Path] = None,
     ):
         self.provider = provider
@@ -59,6 +60,7 @@ class LLMProcessor:
         self.enable_web_search = enable_web_search
         self.academic_domains = academic_domains or []
         self.event_logger = event_logger
+        self.progress_callback = progress_callback
 
         # Use provided cache directory or global default
         if cache_dir is None:
@@ -76,6 +78,18 @@ class LLMProcessor:
                 logger.debug("UI logger callback failed", exc_info=True)
         else:
             logger.debug(message)
+
+    def _emit_progress(self, event: str, payload: Optional[Dict[str, Any]] = None):
+        """Send structured progress events to the optional callback."""
+        if not self.progress_callback:
+            return
+        body = {"event": event}
+        if payload:
+            body.update(payload)
+        try:
+            self.progress_callback(body)
+        except Exception:
+            logger.debug("Progress callback failed", exc_info=True)
 
     def _get_llm(self):
         """Initialize the LLM based on provider configuration."""
@@ -178,6 +192,7 @@ class LLMProcessor:
 
         seen_keys: set[str] = set()
         total_chunks = len(chunks)
+        self._emit_progress("chunks_initialized", {"total": total_chunks})
 
         # Parallelize chunk processing with semaphore
         import asyncio
@@ -192,8 +207,19 @@ class LLMProcessor:
                 self._log_event(
                     f"[Chunk {chunk_label}] size={len(chunk)} characters. Beginning parse."
                 )
+                self._emit_progress(
+                    "chunk_started", {"index": index + 1, "total": total_chunks}
+                )
                 referenced = await self._extract_references_chunk_async(
                     chunk, chunk_label=chunk_label
+                )
+                self._emit_progress(
+                    "chunk_completed",
+                    {
+                        "index": index + 1,
+                        "total": total_chunks,
+                        "references": len(referenced),
+                    },
                 )
                 return referenced
 
@@ -215,6 +241,7 @@ class LLMProcessor:
         self._log_event(
             f"Finished extraction. Total references after dedupe: {len(seen_keys)}"
         )
+        self._emit_progress("extraction_finished", {"total": total_chunks})
 
     async def _extract_references_chunk_async(
         self, text: str, chunk_label: str = "full"
