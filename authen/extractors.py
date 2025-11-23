@@ -151,7 +151,7 @@ class LLMProcessor:
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
 
-    def extract_references(
+    async def extract_references(
         self, text: str, chunk_size: int = 15000, overlap: int = 2000
     ) -> List[ReferenceData]:
         """
@@ -179,13 +179,32 @@ class LLMProcessor:
         seen_keys: set[str] = set()
         total_chunks = len(chunks)
 
-        for index, chunk in enumerate(chunks, start=1):
-            chunk_label = "full" if total_chunks == 1 else f"{index}/{total_chunks}"
-            self._log_event(
-                f"[Chunk {chunk_label}] size={len(chunk)} characters. Beginning parse."
-            )
-            referenced = self._extract_references_chunk(chunk, chunk_label=chunk_label)
-            for ref in referenced:
+        # Parallelize chunk processing
+        import asyncio
+
+        semaphore = asyncio.Semaphore(3)  # Limit concurrent LLM calls
+
+        async def process_chunk(index: int, chunk: str):
+            async with semaphore:
+                chunk_label = (
+                    "full" if total_chunks == 1 else f"{index + 1}/{total_chunks}"
+                )
+                self._log_event(
+                    f"[Chunk {chunk_label}] size={len(chunk)} characters. Beginning parse."
+                )
+                referenced = await self._extract_references_chunk_async(
+                    chunk, chunk_label=chunk_label
+                )
+                return referenced
+
+        tasks = [process_chunk(i, chunk) for i, chunk in enumerate(chunks)]
+        chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for res in chunk_results:
+            if isinstance(res, Exception):
+                logger.error(f"Chunk processing failed: {res}")
+                continue
+            for ref in res:
                 key = self._reference_key(ref)
                 if key and key not in seen_keys:
                     aggregated.append(ref)
@@ -196,10 +215,10 @@ class LLMProcessor:
         )
         return aggregated
 
-    def _extract_references_chunk(
+    async def _extract_references_chunk_async(
         self, text: str, chunk_label: str = "full"
     ) -> List[ReferenceData]:
-        """Extract references from a single chunk of text."""
+        """Extract references from a single chunk of text asynchronously."""
         # Check cache first
         cache_key = self.cache.get_cache_key(
             f"{self.provider}:{self.model_name}:{text}"
@@ -274,7 +293,7 @@ class LLMProcessor:
 
         try:
             self._log_event(f"[Chunk {chunk_label}] Invoking LLM for structured parse.")
-            result = chain.invoke(
+            result = await chain.ainvoke(
                 {
                     "text": text,
                     "format_instructions": self.result_parser.get_format_instructions(),

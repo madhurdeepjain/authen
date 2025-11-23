@@ -403,178 +403,206 @@ def main():
             st.session_state.processing = False
             return
 
-        try:
-            # Extract text from input
-            if input_mode == "PDF Upload" and uploaded_file:
-                with st.spinner("Extracting text from PDF..."):
-                    TEMP_DIR.mkdir(parents=True, exist_ok=True)
-                    temp_path = TEMP_DIR / "temp_references.pdf"
-                    with open(temp_path, "wb") as temp_file:
-                        temp_file.write(uploaded_file.getbuffer())
-                    reference_text = extract_text_from_pdf(str(temp_path))
-                    source_label = uploaded_file.name
-            else:
-                reference_text = manual_text.strip()
-                source_label = "Manual Text Input"
+        async def run_processing():
+            try:
+                # Extract text from input
+                if input_mode == "PDF Upload" and uploaded_file:
+                    with st.spinner("Extracting text from PDF..."):
+                        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+                        temp_path = TEMP_DIR / "temp_references.pdf"
+                        with open(temp_path, "wb") as temp_file:
+                            temp_file.write(uploaded_file.getbuffer())
+                        reference_text = extract_text_from_pdf(str(temp_path))
+                        source_label = uploaded_file.name
+                else:
+                    reference_text = manual_text.strip()
+                    source_label = "Manual Text Input"
 
-            if not reference_text:
-                st.error("No text content detected. Please verify the input.")
-                append_log("Run aborted: empty input text.")
-                return
+                if not reference_text:
+                    st.error("No text content detected. Please verify the input.")
+                    append_log("Run aborted: empty input text.")
+                    return
 
-            append_log(
-                f"Captured {len(reference_text)} characters from {source_label}."
-            )
-            st.session_state.input_preview = reference_text
-            st.session_state.input_source_label = source_label
-
-            effective_overlap = min(chunk_overlap_chars, max(0, chunk_size_chars - 100))
-            if effective_overlap != chunk_overlap_chars:
                 append_log(
-                    f"Adjusted chunk overlap to {effective_overlap} to keep it below chunk size."
+                    f"Captured {len(reference_text)} characters from {source_label}."
                 )
+                st.session_state.input_preview = reference_text
+                st.session_state.input_source_label = source_label
 
-            # Initialize LLM processor
-            processor = LLMProcessor(
-                provider=llm_provider,
-                model_name=model_name,
-                temperature=llm_temperature,
-                enable_web_search=enable_web_search_llm,
-                academic_domains=academic_domains or None,
-                event_logger=append_log,
-            )
-
-            # Extract references using LLM
-            with st.spinner("Chunking document and prompting the LLM..."):
-                extracted_refs = processor.extract_references(
-                    reference_text,
-                    chunk_size=chunk_size_chars,
-                    overlap=effective_overlap,
+                effective_overlap = min(
+                    chunk_overlap_chars, max(0, chunk_size_chars - 100)
                 )
-
-            append_log(
-                f"LLM returned {len(extracted_refs)} references before filtering."
-            )
-            if not extracted_refs:
-                st.warning(
-                    "No references detected. Try adjusting chunk size or input quality."
-                )
-                return
-
-            st.session_state.raw_extraction_json = [
-                ref.model_dump() for ref in extracted_refs
-            ]
-
-            # Initialize validator if enabled
-            validator = AcademicValidator() if enable_cross_validate else None
-            validation_log_text = ""
-
-            # Process and enrich each reference
-            progress_bar = progress_placeholder.progress(0)
-            results: List[ReferenceData] = []
-            search_logs: List[Dict[str, Any]] = []
-            total_refs = len(extracted_refs)
-            processed_count = 0
-            cancelled = False
-
-            with st.spinner("Enriching references and applying academic validation..."):
-                for idx, ref in enumerate(extracted_refs, start=1):
-                    # Skip very short references
-                    if ref.raw_text and len(ref.raw_text.strip()) < 20:
-                        continue
-
-                    if st.session_state.cancel_requested:
-                        append_log("Cancellation requested by user. Halting loop.")
-                        cancelled = True
-                        break
-
-                    processed_count += 1
-                    update_status_message(
-                        f"Processing reference {processed_count}/{total_refs}: {ref.title or 'Unknown Title'}",
-                        level="info",
+                if effective_overlap != chunk_overlap_chars:
+                    append_log(
+                        f"Adjusted chunk overlap to {effective_overlap} to keep it below chunk size."
                     )
 
-                    # Validate and enrich if enabled
-                    if enable_cross_validate and validator:
-                        authors_payload = [
-                            author.model_dump() for author in ref.authors
-                        ]
-                        validation_result = validator.validate_reference_details(
-                            title=ref.title,
-                            authors=authors_payload,
-                            doi=ref.doi,
-                        )
-
-                        # Update validation logs
-                        if validation_result.logs:
-                            validation_log_text += (
-                                "\n".join(
-                                    [
-                                        f"[{processed_count}/{total_refs}] {entry}"
-                                        for entry in validation_result.logs
-                                    ]
-                                )
-                                + "\n"
-                            )
-                            st.session_state.validation_log_text = validation_log_text
-                        ref.search_context = "\n".join(validation_result.logs)
-
-                        # Apply enrichment
-                        apply_reference_enrichment(
-                            ref, validation_result.reference_metadata
-                        )
-                        apply_author_enrichment(ref, validation_result.author_metadata)
-
-                        # Extract and assign emails
-                        found_emails = (
-                            extract_emails(ref.search_context)
-                            if ref.search_context
-                            else []
-                        )
-                        if found_emails:
-                            enrich_authors_with_emails(ref, found_emails)
-
-                        search_logs.append(
-                            {
-                                "index": processed_count,
-                                "title": ref.title,
-                                "reference_metadata": validation_result.reference_metadata,
-                                "author_metadata": validation_result.author_metadata,
-                                "logs": validation_result.logs,
-                                "emails": found_emails,
-                            }
-                        )
-                        with validation_debug_placeholder.container():
-                            render_validation_debug(search_logs, validation_log_text)
-
-                    results.append(ref)
-                    progress_bar.progress(min(processed_count / total_refs, 1.0))
-                    render_results_table(results, results_placeholder)
-
-            st.session_state.results = results
-            st.session_state.search_logs = search_logs
-            st.session_state.validation_log_text = validation_log_text
-
-            if cancelled:
-                update_status_message("Processing cancelled by user.", level="warning")
-                st.warning("Processing cancelled. Partial results are shown above.")
-            else:
-                update_status_message(
-                    "Extraction and validation complete.", level="success"
+                # Initialize LLM processor
+                processor = LLMProcessor(
+                    provider=llm_provider,
+                    model_name=model_name,
+                    temperature=llm_temperature,
+                    enable_web_search=enable_web_search_llm,
+                    academic_domains=academic_domains or None,
+                    event_logger=append_log,
                 )
 
-            with validation_debug_placeholder.container():
-                render_validation_debug(search_logs, validation_log_text)
+                # Extract references using LLM
+                with st.spinner("Chunking document and prompting the LLM..."):
+                    extracted_refs = await processor.extract_references(
+                        reference_text,
+                        chunk_size=chunk_size_chars,
+                        overlap=effective_overlap,
+                    )
 
-            if results:
-                append_log(f"Exported {len(results)} references to Excel.")
-                with download_placeholder.container():
-                    render_download_button(results)
-            progress_placeholder.empty()
-        finally:
-            st.session_state.processing = False
-            st.session_state.cancel_requested = False
-            progress_placeholder.empty()
+                append_log(
+                    f"LLM returned {len(extracted_refs)} references before filtering."
+                )
+                if not extracted_refs:
+                    st.warning(
+                        "No references detected. Try adjusting chunk size or input quality."
+                    )
+                    return
+
+                st.session_state.raw_extraction_json = [
+                    ref.model_dump() for ref in extracted_refs
+                ]
+
+                # Initialize validator if enabled
+                validator = AcademicValidator() if enable_cross_validate else None
+
+                # Process and enrich each reference
+                progress_bar = progress_placeholder.progress(0)
+                results: List[ReferenceData] = []
+                search_logs: List[Dict[str, Any]] = []
+                total_refs = len(extracted_refs)
+                processed_count = 0
+                cancelled = False
+
+                async def validate_ref(ref, idx):
+                    authors_payload = [author.model_dump() for author in ref.authors]
+                    validation_result = await validator.validate_reference_details(
+                        title=ref.title,
+                        authors=authors_payload,
+                        doi=ref.doi,
+                    )
+                    return validation_result, ref, idx
+
+                if enable_cross_validate and validator:
+                    import asyncio
+
+                    validation_tasks = [
+                        validate_ref(ref, idx) for idx, ref in enumerate(extracted_refs)
+                    ]
+                    validation_results = await asyncio.gather(
+                        *validation_tasks, return_exceptions=True
+                    )
+
+                    with st.spinner(
+                        "Enriching references and applying academic validation..."
+                    ):
+                        for res in validation_results:
+                            if isinstance(res, Exception):
+                                logger.error(f"Validation failed: {res}")
+                                continue
+                            validation_result, ref, idx = res
+                            processed_count += 1
+                            update_status_message(
+                                f"Processing reference {processed_count}/{total_refs}: {ref.title or 'Unknown Title'}",
+                                level="info",
+                            )
+
+                            # Update validation logs
+                            if validation_result.logs:
+                                validation_log_text = (
+                                    st.session_state.validation_log_text
+                                    + (
+                                        "\n".join(
+                                            [
+                                                f"[{processed_count}/{total_refs}] {entry}"
+                                                for entry in validation_result.logs
+                                            ]
+                                        )
+                                        + "\n"
+                                    )
+                                )
+                                st.session_state.validation_log_text = (
+                                    validation_log_text
+                                )
+                            ref.search_context = "\n".join(validation_result.logs)
+
+                            # Apply enrichment
+                            apply_reference_enrichment(
+                                ref, validation_result.reference_metadata
+                            )
+                            apply_author_enrichment(
+                                ref, validation_result.author_metadata
+                            )
+
+                            # Extract and assign emails
+                            found_emails = (
+                                extract_emails(ref.search_context)
+                                if ref.search_context
+                                else []
+                            )
+                            if found_emails:
+                                enrich_authors_with_emails(ref, found_emails)
+
+                            search_logs.append(
+                                {
+                                    "index": processed_count,
+                                    "title": ref.title,
+                                    "reference_metadata": validation_result.reference_metadata,
+                                    "author_metadata": validation_result.author_metadata,
+                                    "logs": validation_result.logs,
+                                    "emails": found_emails,
+                                }
+                            )
+                            with validation_debug_placeholder.container():
+                                render_validation_debug(
+                                    search_logs, st.session_state.validation_log_text
+                                )
+
+                            results.append(ref)
+                            progress_bar.progress(
+                                min(processed_count / total_refs, 1.0)
+                            )
+                            render_results_table(results, results_placeholder)
+                else:
+                    # No validation, just add refs
+                    results = extracted_refs
+
+                st.session_state.results = results
+                st.session_state.search_logs = search_logs
+
+                if cancelled:
+                    update_status_message(
+                        "Processing cancelled by user.", level="warning"
+                    )
+                    st.warning("Processing cancelled. Partial results are shown above.")
+                else:
+                    update_status_message(
+                        "Extraction and validation complete.", level="success"
+                    )
+
+                with validation_debug_placeholder.container():
+                    render_validation_debug(
+                        search_logs, st.session_state.validation_log_text
+                    )
+
+                if results:
+                    append_log(f"Exported {len(results)} references to Excel.")
+                    with download_placeholder.container():
+                        render_download_button(results)
+                progress_placeholder.empty()
+            finally:
+                st.session_state.processing = False
+                st.session_state.cancel_requested = False
+                progress_placeholder.empty()
+
+        import asyncio
+
+        asyncio.run(run_processing())
 
     else:
         if st.session_state.results:
