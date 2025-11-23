@@ -195,8 +195,8 @@ def main():
     model_name = ""
     llm_provider = "google"
     llm_temperature = 0.0
-    chunk_size_chars = 8000
-    chunk_overlap_chars = 1200
+    chunk_size_chars = 4000
+    chunk_overlap_chars = 400
     enable_web_search_llm = True
     enable_cross_validate = True
     academic_domains: List[str] = []
@@ -234,7 +234,7 @@ def main():
                 "Chunk Size (characters)",
                 min_value=2000,
                 max_value=24000,
-                value=8000,
+                value=4000,
                 step=1000,
                 format="%d",
             )
@@ -244,7 +244,7 @@ def main():
                 "Chunk Overlap (characters)",
                 min_value=0,
                 max_value=max(1000, chunk_size_chars - 100),
-                value=min(1200, chunk_size_chars - 100),
+                value=min(400, chunk_size_chars - 100),
                 step=200,
                 format="%d",
                 help="Set overlap close to the maximum length of any single reference.",
