@@ -15,6 +15,7 @@ from authen.core import (
     supports_web_search,
     PROVIDER_CONFIG,
     PROVIDER_ORDER,
+    get_logger,
 )
 from authen.models import ReferenceData
 from authen.excel import export_references_to_excel
@@ -44,6 +45,8 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 set_log_dir(LOG_DIR)
 set_llm_cache_dir(LLM_CACHE_DIR)
 set_validation_cache_dir(VALIDATION_CACHE_DIR)
+
+logger = get_logger(__name__)
 
 
 def render_provider_controls(provider: str) -> tuple[str, str]:
