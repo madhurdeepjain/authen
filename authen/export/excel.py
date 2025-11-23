@@ -9,8 +9,8 @@ from typing import Any, Iterable, List, Sequence
 
 import pandas as pd
 
-from .models import ReferenceData, Author
-from .utils import (
+from authen.references.models import ReferenceData, Author
+from authen.references.enrichment import (
     format_affiliation,
     format_author_name,
     get_author_country,

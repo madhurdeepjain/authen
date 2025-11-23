@@ -57,14 +57,16 @@ Authen extracts and validates academic reference metadata from PDF documents or 
 
 ```
 authen/
-├── core.py          # LLM configs, logging, global state
-├── models.py        # Data models (ReferenceData, Author)
-├── extractors.py    # PDF parsing and LLM processing
-├── validators.py    # Academic API validation
-├── utils.py         # Caching and text utilities
-├── excel.py         # Excel export functionality
+├── core/            # Logging, provider metadata, cache paths
+├── pdf/             # PDF readers + text chunking
+├── references/      # Data models, enrichment, caching
+├── llm/             # Provider clients, prompts, reference extractor
+├── validation/      # Academic validation clients + models
+├── exporting/       # Excel/CSV/etc. exporters
+├── pipeline/        # Orchestration glue (PDF → LLM → validation → export)
+└── ui/              # Streamlit components and future UIs
 
-app.py               # Streamlit web interface
+app.py               # Streamlit entry point (imports from authen.ui soon)
 .cache/              # Cached LLM and validation data
 .logs/               # Application logs
 .temp/               # Temporary files

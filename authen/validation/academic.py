@@ -1,5 +1,7 @@
 """Academic validation using multiple academic APIs."""
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
@@ -7,18 +9,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
 
-from .core import get_logger, get_validation_cache_dir
-from .models import AcademicValidationResult
-from .utils import normalize_author_key, split_name
+from authen.core import get_logger, get_validation_cache_dir
+from authen.references.enrichment import normalize_author_key, split_name
+from authen.validation.models import AcademicValidationResult
 
 logger = get_logger(__name__)
 
 
 class AcademicValidator:
-    """
-    Validates references using academic databases and APIs.
-    Provides both validation logs and structured metadata that can enrich results.
-    """
+    """Validates references using academic databases and APIs."""
 
     def __init__(self, log_callback: Optional[Callable[[str], None]] = None):
         self.crossref_base = "https://api.crossref.org/works"
@@ -26,9 +25,8 @@ class AcademicValidator:
         self.arxiv_base = "http://export.arxiv.org/api/query"
         self.semantic_scholar_base = "https://api.semanticscholar.org/graph/v1"
         self.openalex_base = "https://api.openalex.org"
-        self.rate_limit_delay = 0.1  # Reduced delay
-        self.max_concurrent = 5  # Max concurrent requests
-        # Per-API semaphores to prevent simultaneous requests to same API
+        self.rate_limit_delay = 0.1
+        self.max_concurrent = 5
         self.crossref_sem = asyncio.Semaphore(1)
         self.openalex_sem = asyncio.Semaphore(1)
         self.semantic_sem = asyncio.Semaphore(1)
@@ -41,7 +39,6 @@ class AcademicValidator:
     def _get_cache_key(
         self, title: Optional[str], doi: Optional[str], authors: List[dict]
     ) -> str:
-        """Generate a cache key for validation request."""
         normalized_authors = []
         for author in authors or []:
             normalized_authors.append(
@@ -63,7 +60,6 @@ class AcademicValidator:
     def _load_cached_validation(
         self, cache_key: str
     ) -> Optional[AcademicValidationResult]:
-        """Load cached validation result if available."""
         cache_path = self.cache_dir / f"{cache_key}.json"
         if not cache_path.exists():
             return None
@@ -83,7 +79,6 @@ class AcademicValidator:
     def _save_cached_validation(
         self, cache_key: str, result: AcademicValidationResult
     ) -> None:
-        """Save validation result to cache."""
         cache_path = self.cache_dir / f"{cache_key}.json"
         payload = {
             "logs": result.logs,
@@ -129,7 +124,6 @@ class AcademicValidator:
         headers: Optional[Dict] = None,
         expect_json: bool = True,
     ) -> Optional[Any]:
-        """Make a safe async HTTP request with error handling."""
         try:
             await asyncio.sleep(self.rate_limit_delay)
             async with session.get(
@@ -142,18 +136,17 @@ class AcademicValidator:
                 if expect_json:
                     return await response.json()
                 return await response.text()
-        except aiohttp.ClientError as e:
-            logger.warning(f"API request failed for {url}: {e}")
+        except aiohttp.ClientError as exc:
+            logger.warning(f"API request failed for {url}: {exc}")
             return None
-        except ValueError as e:
-            logger.warning(f"Failed to decode response from {url}: {e}")
+        except ValueError as exc:
+            logger.warning(f"Failed to decode response from {url}: {exc}")
             return None
-        except Exception as e:
-            logger.error(f"Unexpected error in API request: {e}")
+        except Exception as exc:
+            logger.error(f"Unexpected error in API request: {exc}")
             return None
 
     def _format_crossref_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Map Crossref response to our metadata structure."""
         metadata: Dict[str, Any] = {
             "title": (item.get("title", [None])[0] if item.get("title") else None),
             "publication": (
@@ -200,7 +193,6 @@ class AcademicValidator:
         return metadata
 
     def _format_openalex_work(self, work: Dict[str, Any]) -> Dict[str, Any]:
-        """Map OpenAlex work response to our metadata structure."""
         host = work.get("host_venue") or {}
         primary_loc = work.get("primary_location") or {}
         oa_location = work.get("best_oa_location") or {}
@@ -251,7 +243,6 @@ class AcademicValidator:
         return metadata
 
     def _format_openalex_author(self, author: Dict[str, Any]) -> Dict[str, Any]:
-        """Map OpenAlex author response to our metadata structure."""
         if not isinstance(author, dict):
             return {}
         institution = author.get("last_known_institution") or {}
@@ -273,7 +264,6 @@ class AcademicValidator:
     async def search_crossref(
         self, session: aiohttp.ClientSession, title: str, doi: Optional[str] = None
     ) -> Tuple[List[str], Optional[Dict[str, Any]]]:
-        """Search Crossref API for paper metadata."""
         async with self.crossref_sem:
             logs: List[str] = []
             metadata = None
@@ -296,15 +286,14 @@ class AcademicValidator:
                     )
                 else:
                     logs.append("Crossref: No close matches found.")
-            except Exception as e:
-                logger.error(f"Error in Crossref search: {e}")
+            except Exception as exc:
+                logger.error(f"Error in Crossref search: {exc}")
                 logs.append("Crossref search failed.")
             return logs, metadata
 
     async def search_pubmed(
         self, session: aiohttp.ClientSession, title: str
     ) -> List[str]:
-        """Search PubMed API for biomedical papers."""
         async with self.pubmed_sem:
             results = []
             try:
@@ -329,14 +318,13 @@ class AcademicValidator:
                         results.append(
                             f"PubMed: Found {len(pmids)} potential match(es)."
                         )
-            except Exception as e:
-                logger.error(f"Error in PubMed search: {e}")
+            except Exception as exc:
+                logger.error(f"Error in PubMed search: {exc}")
             return results
 
     async def search_arxiv(
         self, session: aiohttp.ClientSession, title: str
     ) -> List[str]:
-        """Search arXiv API for preprints."""
         async with self.arxiv_sem:
             results = []
             try:
@@ -346,14 +334,13 @@ class AcademicValidator:
                 )
                 if response_text and "<entry>" in response_text:
                     results.append("arXiv: Found potential matching preprints.")
-            except Exception as e:
-                logger.error(f"Error in arXiv search: {e}")
+            except Exception as exc:
+                logger.error(f"Error in arXiv search: {exc}")
             return results
 
     async def search_semantic_scholar(
         self, session: aiohttp.ClientSession, title: str, doi: Optional[str] = None
     ) -> List[str]:
-        """Search Semantic Scholar API."""
         async with self.semantic_sem:
             results = []
             try:
@@ -373,14 +360,13 @@ class AcademicValidator:
                             results.append(
                                 f"Semantic Scholar candidate: {paper.get('title', 'Unknown')}"
                             )
-            except Exception as e:
-                logger.error(f"Error in Semantic Scholar search: {e}")
+            except Exception as exc:
+                logger.error(f"Error in Semantic Scholar search: {exc}")
             return results
 
     async def search_openalex(
         self, session: aiohttp.ClientSession, title: str, doi: Optional[str] = None
     ) -> Tuple[List[str], Optional[Dict[str, Any]]]:
-        """Search OpenAlex API."""
         async with self.openalex_sem:
             logs: List[str] = []
             metadata = None
@@ -402,8 +388,8 @@ class AcademicValidator:
                     )
                 else:
                     logs.append("OpenAlex: No close matches found.")
-            except Exception as e:
-                logger.error(f"Error in OpenAlex search: {e}")
+            except Exception as exc:
+                logger.error(f"Error in OpenAlex search: {exc}")
                 logs.append("OpenAlex search failed.")
             return logs, metadata
 
@@ -413,7 +399,6 @@ class AcademicValidator:
         author_name: str,
         affiliation: Optional[str] = None,
     ) -> Tuple[List[str], Optional[Dict[str, Any]]]:
-        """Validate author information using OpenAlex."""
         async with self.openalex_sem:
             logs: List[str] = []
             metadata = None
@@ -441,8 +426,8 @@ class AcademicValidator:
                     logs.append(
                         f"Author validation: No OpenAlex match for {author_name} (affiliation hint: {affiliation or 'n/a'})."
                     )
-            except Exception as e:
-                logger.error(f"Error validating author: {e}")
+            except Exception as exc:
+                logger.error(f"Error validating author: {exc}")
                 logs.append(f"Author validation failed for {author_name}.")
 
             return logs, metadata
@@ -455,10 +440,6 @@ class AcademicValidator:
         log_callback: Optional[Callable[[str], None]] = None,
         log_prefix: str = "",
     ) -> AcademicValidationResult:
-        """
-        Perform comprehensive validation using academic databases and return
-        both logs and any structured metadata discovered.
-        """
         result = AcademicValidationResult()
         emitter = log_callback or self.log_callback
         if not title and not doi:
@@ -476,14 +457,12 @@ class AcademicValidator:
             return cached
 
         async with aiohttp.ClientSession() as session:
-            # Parallelize main searches
             tasks = [
                 self.search_crossref(session, title or "", doi),
                 self.search_openalex(session, title or "", doi),
                 self.search_semantic_scholar(session, title or "", doi),
             ]
 
-            # Add PubMed and arXiv if title
             if title:
                 if any(
                     keyword in title.lower()
@@ -498,24 +477,21 @@ class AcademicValidator:
                     tasks.append(self.search_pubmed(session, title))
                 tasks.append(self.search_arxiv(session, title))
 
-            # Gather results
             search_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Process results
-            for res in search_results:
-                if isinstance(res, Exception):
-                    logger.error(f"Search task failed: {res}")
+            for entry in search_results:
+                if isinstance(entry, Exception):
+                    logger.error(f"Search task failed: {entry}")
                     continue
-                if isinstance(res, tuple):  # crossref and openalex return tuples
-                    logs, meta = res
+                if isinstance(entry, tuple):
+                    logs, meta = entry
                     result.logs.extend(logs)
                     self._emit_logs(emitter, logs, log_prefix)
                     result.merge_reference_metadata(meta)
-                elif isinstance(res, list):  # others return lists
-                    result.logs.extend(res)
-                    self._emit_logs(emitter, res, log_prefix)
+                elif isinstance(entry, list):
+                    result.logs.extend(entry)
+                    self._emit_logs(emitter, entry, log_prefix)
 
-            # Parallelize author validations
             author_tasks = []
             for author in authors or []:
                 first = author.get("first_name")
@@ -534,14 +510,24 @@ class AcademicValidator:
                 author_results = await asyncio.gather(
                     *author_tasks, return_exceptions=True
                 )
-                for res in author_results:
-                    if isinstance(res, Exception):
-                        logger.error(f"Author validation failed: {res}")
+                for idx, entry in enumerate(author_results):
+                    first = (
+                        authors[idx].get("first_name") if idx < len(authors) else None
+                    )
+                    last = authors[idx].get("last_name") if idx < len(authors) else None
+                    name = " ".join([part for part in [first, last] if part]).strip()
+                    fallback = name or (
+                        authors[idx].get("raw") if idx < len(authors) else ""
+                    )
+                    normalized_name = normalize_author_key(
+                        first, last, fallback=fallback
+                    )
+                    if isinstance(entry, Exception):
+                        logger.error(f"Author validation failed: {entry}")
                         continue
-                    logs, meta = res
+                    logs, meta = entry
                     result.logs.extend(logs)
                     self._emit_logs(emitter, logs, log_prefix)
-                    normalized_name = normalize_author_key(first, last, fallback=name)
                     result.merge_author_metadata(normalized_name, meta or {})
 
         if not result.logs:
@@ -549,5 +535,4 @@ class AcademicValidator:
             self._emit_logs(emitter, [result.logs[-1]], log_prefix)
 
         self._save_cached_validation(cache_key, result)
-
         return result
