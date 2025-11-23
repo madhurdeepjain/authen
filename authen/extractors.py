@@ -271,7 +271,7 @@ class LLMProcessor:
                     "If search tools are available, use them to:\n"
                     "1. Verify the existence of the paper.\n"
                     "2. Find and fill in missing author affiliations including institution name, department, country, and city.\n"
-                    "3. Find and fill in author contact details (email, address) if publicly available.\n"
+                    "3. Find and fill in author contact details (email, address).\n"
                     "4. Ensure author names are complete and correct.\n"
                     "5. Extract author country information.\n"
                     f"{domain_restriction}"

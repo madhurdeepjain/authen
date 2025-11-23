@@ -335,12 +335,12 @@ def main():
         st.session_state.ui_log.append(entry)
         log_placeholder.code("\n".join(st.session_state.ui_log), language=None)
 
-    status_placeholder = st.empty()
-    results_placeholder = st.empty()
     input_preview_placeholder = st.empty()
     raw_llm_placeholder = st.empty()
     progress_placeholder = st.empty()
     validation_debug_placeholder = st.empty()
+    results_placeholder = st.empty()
+    status_placeholder = st.empty()
     download_placeholder = st.empty()
 
     def render_status_message():
@@ -366,8 +366,8 @@ def main():
 
     render_status_message()
 
-    def render_cached_artifacts():
-        """Render stored input preview and raw LLM output within stable placeholders."""
+    def render_input_preview():
+        """Render stored input preview within stable placeholders."""
         input_preview_placeholder.empty()
         raw_llm_placeholder.empty()
 
@@ -383,6 +383,9 @@ def main():
                         height=300,
                         key="cached_input_preview",
                     )
+
+    def render_raw_llm_output():
+        """Render raw LLM output within stable placeholders."""
 
         if st.session_state.raw_extraction_json:
             with raw_llm_placeholder.container():
@@ -433,7 +436,7 @@ def main():
                 st.session_state.input_source_label = source_label
 
                 # Show extracted text immediately
-                render_cached_artifacts()
+                render_input_preview()
 
                 effective_overlap = min(
                     chunk_overlap_chars, max(0, chunk_size_chars - 100)
@@ -493,6 +496,7 @@ def main():
                 st.session_state.raw_extraction_json = [
                     ref.model_dump() for ref in extracted_refs
                 ]
+                render_raw_llm_output()
 
                 # Process and enrich each reference
                 progress_bar = progress_placeholder.progress(0)
@@ -503,13 +507,12 @@ def main():
                 cancelled = False
 
                 if enable_cross_validate and validator:
-                    validation_results = await asyncio.gather(
-                        *validation_tasks, return_exceptions=True
-                    )
-
                     with st.spinner(
                         "Enriching references and applying academic validation..."
                     ):
+                        validation_results = await asyncio.gather(
+                            *validation_tasks, return_exceptions=True
+                        )
                         for res in validation_results:
                             if isinstance(res, Exception):
                                 logger.error(f"Validation failed: {res}")
@@ -617,7 +620,8 @@ def main():
                 update_status_message("Ready. Showing the most recent extraction.")
             else:
                 render_status_message()
-            render_cached_artifacts()
+            render_input_preview()
+            render_raw_llm_output()
             render_results_table(st.session_state.results, results_placeholder)
             with validation_debug_placeholder.container():
                 render_validation_debug(
