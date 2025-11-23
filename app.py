@@ -1,5 +1,6 @@
 """Streamlit UI for Authen - Reference Metadata Extraction & Validation."""
 
+import asyncio
 import os
 from datetime import datetime
 from pathlib import Path
@@ -408,7 +409,6 @@ def main():
 
         async def run_processing():
             try:
-                # Extract text from input
                 if input_mode == "PDF Upload" and uploaded_file:
                     with st.spinner("Extracting text from PDF..."):
                         TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -453,13 +453,33 @@ def main():
                     event_logger=append_log,
                 )
 
+                # Initialize validator if enabled
+                validator = AcademicValidator() if enable_cross_validate else None
+
+                async def validate_ref(ref, idx):
+                    authors_payload = [author.model_dump() for author in ref.authors]
+                    validation_result = await validator.validate_reference_details(
+                        title=ref.title,
+                        authors=authors_payload,
+                        doi=ref.doi,
+                    )
+                    return validation_result, ref, idx
+
                 # Extract references using LLM
                 with st.spinner("Chunking document and prompting the LLM..."):
-                    extracted_refs = await processor.extract_references(
+                    extracted_refs = []
+                    validation_tasks = []
+                    idx = 0
+                    async for ref in processor.extract_references(
                         reference_text,
                         chunk_size=chunk_size_chars,
                         overlap=effective_overlap,
-                    )
+                    ):
+                        extracted_refs.append(ref)
+                        if enable_cross_validate and validator:
+                            task = asyncio.create_task(validate_ref(ref, idx))
+                            validation_tasks.append(task)
+                        idx += 1
 
                 append_log(
                     f"LLM returned {len(extracted_refs)} references before filtering."
@@ -474,9 +494,6 @@ def main():
                     ref.model_dump() for ref in extracted_refs
                 ]
 
-                # Initialize validator if enabled
-                validator = AcademicValidator() if enable_cross_validate else None
-
                 # Process and enrich each reference
                 progress_bar = progress_placeholder.progress(0)
                 results: List[ReferenceData] = []
@@ -485,21 +502,7 @@ def main():
                 processed_count = 0
                 cancelled = False
 
-                async def validate_ref(ref, idx):
-                    authors_payload = [author.model_dump() for author in ref.authors]
-                    validation_result = await validator.validate_reference_details(
-                        title=ref.title,
-                        authors=authors_payload,
-                        doi=ref.doi,
-                    )
-                    return validation_result, ref, idx
-
                 if enable_cross_validate and validator:
-                    import asyncio
-
-                    validation_tasks = [
-                        validate_ref(ref, idx) for idx, ref in enumerate(extracted_refs)
-                    ]
                     validation_results = await asyncio.gather(
                         *validation_tasks, return_exceptions=True
                     )
@@ -605,8 +608,6 @@ def main():
                 st.session_state.processing = False
                 st.session_state.cancel_requested = False
                 progress_placeholder.empty()
-
-        import asyncio
 
         asyncio.run(run_processing())
 

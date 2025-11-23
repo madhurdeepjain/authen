@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import AsyncIterator, Callable, List, Optional
 
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
@@ -153,13 +153,14 @@ class LLMProcessor:
 
     async def extract_references(
         self, text: str, chunk_size: int = 15000, overlap: int = 2000
-    ) -> List[ReferenceData]:
+    ) -> AsyncIterator[ReferenceData]:
         """
         Split text into chunks and extract references using the LLM.
+        Yields references as they are extracted from each chunk.
         Handles large text by chunking with overlap.
         """
         if not text or not text.strip():
-            return []
+            return
 
         self._log_event(
             f"Starting extraction | provider={self.provider} model={self.model_name} "
@@ -175,11 +176,10 @@ class LLMProcessor:
         if len(chunks) == 1:
             self._log_event("Processing single chunk (no splitting needed).")
 
-        aggregated: List[ReferenceData] = []
         seen_keys: set[str] = set()
         total_chunks = len(chunks)
 
-        # Parallelize chunk processing
+        # Parallelize chunk processing with semaphore
         import asyncio
 
         semaphore = asyncio.Semaphore(3)  # Limit concurrent LLM calls
@@ -197,23 +197,24 @@ class LLMProcessor:
                 )
                 return referenced
 
-        tasks = [process_chunk(i, chunk) for i, chunk in enumerate(chunks)]
-        chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for res in chunk_results:
+        tasks = [
+            asyncio.create_task(process_chunk(i, chunk))
+            for i, chunk in enumerate(chunks)
+        ]
+        for completed_task in asyncio.as_completed(tasks):
+            res = await completed_task
             if isinstance(res, Exception):
                 logger.error(f"Chunk processing failed: {res}")
                 continue
             for ref in res:
                 key = self._reference_key(ref)
                 if key and key not in seen_keys:
-                    aggregated.append(ref)
                     seen_keys.add(key)
+                    yield ref
 
         self._log_event(
-            f"Finished extraction. Total references after dedupe: {len(aggregated)}"
+            f"Finished extraction. Total references after dedupe: {len(seen_keys)}"
         )
-        return aggregated
 
     async def _extract_references_chunk_async(
         self, text: str, chunk_label: str = "full"
