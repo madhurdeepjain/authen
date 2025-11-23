@@ -339,8 +339,8 @@ def main():
     input_preview_placeholder = st.empty()
     raw_llm_placeholder = st.empty()
     progress_placeholder = st.empty()
-    download_placeholder = st.empty()
     validation_debug_placeholder = st.empty()
+    download_placeholder = st.empty()
 
     def render_status_message():
         """Render the persisted status message if available."""
@@ -431,6 +431,9 @@ def main():
                 )
                 st.session_state.input_preview = reference_text
                 st.session_state.input_source_label = source_label
+
+                # Show extracted text immediately
+                render_cached_artifacts()
 
                 effective_overlap = min(
                     chunk_overlap_chars, max(0, chunk_size_chars - 100)
