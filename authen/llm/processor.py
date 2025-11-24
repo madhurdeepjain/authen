@@ -34,6 +34,7 @@ class ReferenceExtractor:
         event_logger: Optional[Callable[[str], None]] = None,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         cache_dir: Optional[Path] = None,
+        max_retries: int = 2,
     ) -> None:
         self.provider = provider
         self.model_name = model_name
@@ -42,6 +43,7 @@ class ReferenceExtractor:
         self.academic_domains = academic_domains or []
         self.event_logger = event_logger
         self.progress_callback = progress_callback
+        self.max_retries = max(0, max_retries)
 
         cache_dir = cache_dir or get_llm_cache_dir()
         self.cache = CacheManager(cache_dir)
@@ -52,6 +54,8 @@ class ReferenceExtractor:
             enable_web_search=self.enable_web_search,
         )
         self.result_parser = PydanticOutputParser(pydantic_object=ReferenceList)
+        self.format_instructions = self.result_parser.get_format_instructions()
+        self.structured_llm = self._init_structured_llm()
         self.prompt = build_reference_prompt(self.academic_domains)
 
     def _log_event(self, message: str) -> None:
@@ -116,7 +120,11 @@ class ReferenceExtractor:
                 self._emit_progress(
                     "chunk_started", {"index": index + 1, "total": total_chunks}
                 )
-                references = await self._extract_references_chunk(chunk, chunk_label)
+                references = await self._extract_references_chunk(
+                    chunk,
+                    chunk_label,
+                    chunk_index=index,
+                )
                 self._emit_progress(
                     "chunk_completed",
                     {
@@ -127,30 +135,62 @@ class ReferenceExtractor:
                 )
                 return references
 
-        tasks = [
-            asyncio.create_task(process_chunk(i, chunk))
-            for i, chunk in enumerate(chunks)
-        ]
+        task_index_map = {}
+        for i, chunk in enumerate(chunks):
+            task = asyncio.create_task(process_chunk(i, chunk))
+            task_index_map[task] = i
 
-        for completed in asyncio.as_completed(tasks):
-            try:
-                result = await completed
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.error("Chunk processing failed: %s", exc)
-                continue
-            for reference in result:
-                key = self._reference_key(reference)
-                if key and key not in seen_keys:
-                    seen_keys.add(key)
-                    yield reference
+        while task_index_map:
+            done, _ = await asyncio.wait(
+                list(task_index_map.keys()), return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                chunk_index = task_index_map.pop(task, None)
+                try:
+                    result = task.result()
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.error("Chunk processing failed: %s", exc)
+                    self._emit_progress(
+                        "chunk_failed",
+                        {
+                            "index": (chunk_index or 0) + 1,
+                            "total": total_chunks,
+                            "error": str(exc),
+                        },
+                    )
+                    continue
+
+                for reference in result:
+                    key = self._reference_key(reference)
+                    if key and key not in seen_keys:
+                        seen_keys.add(key)
+                        yield reference
 
         self._log_event(
             f"Finished extraction. Total references after dedupe: {len(seen_keys)}"
         )
         self._emit_progress("extraction_finished", {"total": total_chunks})
 
+    def _init_structured_llm(self):
+        structured_output_fn = getattr(self.llm, "with_structured_output", None)
+        if not callable(structured_output_fn):
+            return None
+        try:
+            structured_llm = structured_output_fn(ReferenceList)
+            self._log_event("Structured output mode enabled for this provider.")
+            return structured_llm
+        except Exception:
+            logger.debug(
+                "Structured outputs not available; falling back to parser.",
+                exc_info=True,
+            )
+            return None
+
     async def _extract_references_chunk(
-        self, text: str, chunk_label: str = "full"
+        self,
+        text: str,
+        chunk_label: str = "full",
+        chunk_index: Optional[int] = None,
     ) -> List[ReferenceData]:
         cache_key = self.cache.get_cache_key(
             f"{self.provider}:{self.model_name}:{text}"
@@ -163,37 +203,67 @@ class ReferenceExtractor:
             )
             return references
 
-        chain = (
-            self.prompt
-            | self.llm
-            | RunnableLambda(self._handle_llm_response)
-            | self.result_parser
-        )
+        if self.structured_llm:
+            chain = self.prompt | self.structured_llm
+        else:
+            chain = (
+                self.prompt
+                | self.llm
+                | RunnableLambda(self._handle_llm_response)
+                | self.result_parser
+            )
 
-        try:
-            self._log_event(f"[Chunk {chunk_label}] Invoking LLM for structured parse.")
-            result = await chain.ainvoke(
-                {
-                    "text": text,
-                    "format_instructions": self.result_parser.get_format_instructions(),
-                }
-            )
-            references = result.references if hasattr(result, "references") else []
+        total_attempts = max(1, 1 + self.max_retries)
+        for attempt in range(1, total_attempts + 1):
+            try:
+                self._log_event(
+                    f"[Chunk {chunk_label}] Invoking LLM for structured parse (attempt {attempt}/{total_attempts})."
+                )
+                result = await chain.ainvoke(
+                    {
+                        "text": text,
+                        "format_instructions": self.format_instructions,
+                    }
+                )
+                references = result.references if hasattr(result, "references") else []
 
-            payload = [reference.model_dump() for reference in references]
-            self.cache.save_cached_response(cache_key, payload)
-            self._log_event(
-                f"[Chunk {chunk_label}] Parsed {len(references)} references via LLM."
-            )
-            return references
-        except Exception as exc:
-            logger.error(
-                "Error extracting references from chunk: %s", exc, exc_info=True
-            )
-            self._log_event(
-                f"[Chunk {chunk_label}] Failed to parse references. See logs for details."
-            )
-            return []
+                payload = [reference.model_dump() for reference in references]
+                self.cache.save_cached_response(cache_key, payload)
+                self._log_event(
+                    f"[Chunk {chunk_label}] Parsed {len(references)} references via LLM."
+                )
+                if attempt > 1:
+                    payload = {"label": chunk_label, "attempts": attempt}
+                    if chunk_index is not None:
+                        payload["index"] = chunk_index + 1
+                    self._emit_progress("chunk_recovered", payload)
+                return references
+            except Exception as exc:
+                logger.error(
+                    "Error extracting references from chunk (attempt %s/%s): %s",
+                    attempt,
+                    total_attempts,
+                    exc,
+                    exc_info=True,
+                )
+                is_last_attempt = attempt == total_attempts
+                if is_last_attempt:
+                    self._log_event(
+                        f"[Chunk {chunk_label}] Failed to parse references after {total_attempts} attempts. See logs for details."
+                    )
+                    payload = {
+                        "label": chunk_label,
+                        "attempts": total_attempts,
+                        "error": str(exc),
+                    }
+                    if chunk_index is not None:
+                        payload["index"] = chunk_index + 1
+                    self._emit_progress("chunk_failed", payload)
+                    return []
+
+                self._log_event(
+                    f"[Chunk {chunk_label}] Retrying (attempt {attempt + 1}/{total_attempts})."
+                )
 
     def _handle_llm_response(self, ai_message):
         messages = ai_message if isinstance(ai_message, list) else [ai_message]

@@ -20,7 +20,7 @@ from authen.references.text import extract_emails
 from authen.validation import AcademicValidator
 
 StatusHook = Callable[[str], None]
-ProgressHook = Callable[[Dict[str, int]], None]
+ProgressHook = Callable[[Dict[str, Any]], None]
 ValidationLogHook = Callable[[str], None]
 ReferenceHook = Callable[[ReferenceData, int], None]
 ValidationStateHook = Callable[[int, str], None]
@@ -264,7 +264,7 @@ class AuthenPipeline:
                 pass
         print(message)
 
-    def _emit_progress(self, payload: Dict[str, int]) -> None:
+    def _emit_progress(self, payload: Dict[str, Any]) -> None:
         if self.hooks.on_progress:
             try:
                 self.hooks.on_progress(payload)
@@ -280,20 +280,49 @@ class AuthenPipeline:
                 pass
         self._emit_status(message)
 
-    def _handle_llm_progress(self, event: Dict[str, int]) -> None:
-        if event.get("event") == "chunks_initialized":
+    def _handle_llm_progress(self, event: Dict[str, Any]) -> None:
+        if not event:
+            return
+        event_name = event.get("event")
+        if event_name == "chunks_initialized":
             self._chunk_total = event.get("total", 0)
             self._chunk_completed = 0
-            self._emit_progress({"chunks_total": self._chunk_total})
-        elif event.get("event") == "chunk_completed":
+            self._emit_progress(
+                {
+                    "event": "chunk_progress",
+                    "chunks_total": self._chunk_total,
+                    "chunks_completed": self._chunk_completed,
+                }
+            )
+        elif event_name == "chunk_completed":
             self._chunk_completed += 1
             self._emit_progress(
                 {
+                    "event": "chunk_progress",
                     "chunks_total": self._chunk_total,
                     "chunks_completed": self._chunk_completed,
                     "chunk_references": event.get("references", 0),
+                    "chunk_index": event.get("index"),
                 }
             )
+        elif event_name in {"chunk_failed", "chunk_recovered"}:
+            chunk_label = event.get("label") or event.get("index")
+            payload = {
+                "event": event_name,
+                "chunk_label": chunk_label,
+                "chunk_index": event.get("index"),
+                "attempts": event.get("attempts"),
+                "error": event.get("error"),
+            }
+            self._emit_progress(payload)
+            if event_name == "chunk_failed":
+                self._emit_status(
+                    f"LLM chunk {chunk_label} failed after {event.get('attempts')} attempts: {event.get('error')}"
+                )
+            else:
+                self._emit_status(
+                    f"LLM chunk {chunk_label} recovered on attempt {event.get('attempts')}"
+                )
 
     def _emit_reference(self, reference: ReferenceData, index: int) -> None:
         if self.hooks.on_reference:

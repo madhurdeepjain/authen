@@ -551,13 +551,42 @@ def run_app():
             append_log(message)
             update_status_message(message, level="info")
 
-        def handle_pipeline_progress(payload: Dict[str, int]):
-            if "chunks_total" in payload:
-                st.session_state.chunk_progress["total"] = payload["chunks_total"]
-            if "chunks_completed" in payload:
-                st.session_state.chunk_progress["completed"] = payload[
-                    "chunks_completed"
-                ]
+        def handle_pipeline_progress(payload: Dict[str, Any]):
+            event_type = payload.get("event")
+            if event_type == "chunk_failed":
+                chunk_label = payload.get("chunk_label") or payload.get("chunk_index")
+                attempts = payload.get("attempts")
+                error_msg = payload.get("error", "Unknown error")
+                append_log(
+                    f"Chunk {chunk_label} failed after {attempts} attempts: {error_msg}"
+                )
+                update_status_message(
+                    f"Chunk {chunk_label} failed after {attempts} attempts. Retrying...",
+                    level="warning",
+                )
+                return
+            if event_type == "chunk_recovered":
+                chunk_label = payload.get("chunk_label") or payload.get("chunk_index")
+                attempts = payload.get("attempts")
+                append_log(f"Chunk {chunk_label} recovered after {attempts} attempts.")
+                update_status_message(
+                    f"Chunk {chunk_label} recovered after retry.",
+                    level="info",
+                )
+                return
+
+            if event_type == "chunk_progress" or any(
+                key in payload for key in ("chunks_total", "chunks_completed")
+            ):
+                if "chunks_total" in payload:
+                    st.session_state.chunk_progress["total"] = payload["chunks_total"]
+                if "chunks_completed" in payload:
+                    st.session_state.chunk_progress["completed"] = payload[
+                        "chunks_completed"
+                    ]
+                refresh_progress_widgets()
+                return
+
             if "validation_total" in payload:
                 st.session_state.validation_progress["total"] = payload[
                     "validation_total"
