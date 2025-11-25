@@ -6,9 +6,8 @@ Supports loading from environment variables, .env files, and programmatic config
 
 import os
 from enum import Enum
-from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -107,12 +106,22 @@ class Config(BaseSettings):
 
     # PDF Processing
     pdf_chunk_size: int = Field(
-        default=50000,
+        default=4000,
         description="Maximum characters per chunk for LLM processing",
     )
     pdf_chunk_overlap: int = Field(
-        default=1000,
+        default=400,
         description="Overlap between chunks to avoid splitting references",
+    )
+
+    # Parallel Processing
+    max_concurrent_chunks: int = Field(
+        default=3,
+        description="Maximum LLM chunks to process in parallel",
+    )
+    max_concurrent_validations: int = Field(
+        default=5,
+        description="Maximum concurrent OpenAlex validation requests",
     )
 
     # Export Settings
@@ -165,66 +174,3 @@ class Config(BaseSettings):
             )
 
         return issues
-
-
-class PDFConfig(BaseModel):
-    """Configuration specific to PDF extraction."""
-
-    chunk_size: int = Field(default=50000, description="Max chars per chunk")
-    chunk_overlap: int = Field(default=1000, description="Overlap between chunks")
-    extract_images: bool = Field(default=False, description="Extract text from images")
-    use_ocr: bool = Field(default=False, description="Use OCR for scanned PDFs")
-
-
-class LLMConfig(BaseModel):
-    """Configuration specific to LLM processing."""
-
-    provider: LLMProvider = Field(default=LLMProvider.GOOGLE)
-    model: str = Field(default="gemini-2.5-flash")
-    temperature: float = Field(default=0.0)
-    max_tokens: int = Field(default=16384)
-    api_key: str | None = Field(default=None)
-    base_url: str | None = Field(default=None)
-
-
-class ValidationConfig(BaseModel):
-    """Configuration specific to OpenAlex validation."""
-
-    email: str = Field(default="user@example.com")
-    rate_limit: int = Field(default=10)
-    max_retries: int = Field(default=5)
-    timeout: int = Field(default=30)
-    title_threshold: float = Field(default=0.85)
-    author_threshold: float = Field(default=0.7)
-    batch_size: int = Field(default=50)
-
-
-def load_config(
-    config_path: str | Path | None = None,
-    **overrides,
-) -> Config:
-    """
-    Load configuration from file and/or environment.
-
-    Args:
-        config_path: Optional path to .env file
-        **overrides: Configuration values to override
-
-    Returns:
-        Configured Config instance
-    """
-    if config_path:
-        os.environ["ENV_FILE"] = str(config_path)
-
-    config = Config(**overrides)
-
-    # Log any validation issues
-    issues = config.validate_config()
-    if issues:
-        import structlog
-
-        logger = structlog.get_logger()
-        for issue in issues:
-            logger.warning("config_issue", issue=issue)
-
-    return config

@@ -26,8 +26,8 @@ class PDFExtractor:
 
     def __init__(
         self,
-        chunk_size: int = 50000,
-        chunk_overlap: int = 1000,
+        chunk_size: int = 4000,
+        chunk_overlap: int = 400,
     ):
         """
         Initialize the PDF extractor.

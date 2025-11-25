@@ -3,9 +3,15 @@ Reference parser using LLMs with structured output.
 
 Handles parsing of reference text into structured data,
 including support for chunked processing of large documents.
+
+Supports two modes:
+1. Sequential: Parse all chunks, deduplicate, return result
+2. Streaming: Parse chunks in parallel, yield references as they become available
 """
 
+import asyncio
 import time
+from collections.abc import AsyncIterator
 
 import structlog
 
@@ -53,6 +59,10 @@ class ReferenceParser:
 
     This class is designed to be used standalone - just instantiate
     with a provider and call parse() with your text.
+
+    Supports both sequential and streaming modes:
+    - parse(): Sequential mode, returns all references after processing
+    - parse_streaming(): Streaming mode, yields references as chunks complete
     """
 
     def __init__(
@@ -60,6 +70,7 @@ class ReferenceParser:
         provider: BaseLLMProvider,
         chunk_size: int = 30000,
         chunk_overlap: int = 500,
+        max_concurrent_chunks: int = 3,
     ):
         """
         Initialize the reference parser.
@@ -68,10 +79,12 @@ class ReferenceParser:
             provider: LLM provider instance
             chunk_size: Maximum characters per chunk for LLM processing
             chunk_overlap: Overlap between chunks
+            max_concurrent_chunks: Maximum chunks to process in parallel
         """
         self.provider = provider
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.max_concurrent_chunks = max_concurrent_chunks
         self.system_prompt = SYSTEM_PROMPT
 
     async def parse(
@@ -121,27 +134,161 @@ class ReferenceParser:
             processing_time_seconds=processing_time,
         )
 
+    async def parse_streaming(
+        self,
+        text: str,
+    ) -> AsyncIterator[ReferenceData]:
+        """
+        Parse references from text in streaming mode.
+
+        Chunks are processed in parallel (up to max_concurrent_chunks),
+        and references are yielded as soon as each chunk completes.
+        Deduplication happens on-the-fly.
+
+        Args:
+            text: Text containing references to parse
+
+        Yields:
+            ReferenceData objects as they become available
+        """
+        logger.info(
+            "starting_streaming_parse",
+            text_len=len(text),
+            provider=self.provider.provider_name,
+        )
+
+        # Track seen references for streaming deduplication
+        seen_dois: set[str] = set()
+        seen_titles: set[str] = set()
+
+        if len(text) <= self.chunk_size:
+            # Single chunk - just parse and yield
+            result = await self.provider.parse_references(text, self.system_prompt)
+            references = self._convert_references(result)
+            for ref in references:
+                if self._is_duplicate(ref, seen_dois, seen_titles):
+                    continue
+                self._mark_seen(ref, seen_dois, seen_titles)
+                yield ref
+            return
+
+        # Multiple chunks - process in parallel with semaphore
+        chunks = self._create_chunks(text)
+        logger.info("streaming_parse_chunks", chunk_count=len(chunks))
+
+        semaphore = asyncio.Semaphore(self.max_concurrent_chunks)
+        output_queue: asyncio.Queue[ReferenceData | None] = asyncio.Queue()
+
+        async def process_chunk(chunk_num: int, chunk: str) -> None:
+            """Process a single chunk and put results in queue."""
+            async with semaphore:
+                logger.info("parsing_chunk", chunk_num=chunk_num + 1, total=len(chunks))
+                try:
+                    result = await self.provider.parse_references(
+                        chunk, self.system_prompt
+                    )
+                    chunk_refs = self._convert_references(result)
+                    for ref in chunk_refs:
+                        await output_queue.put(ref)
+                except Exception as e:
+                    logger.error(
+                        "chunk_parsing_error",
+                        chunk_num=chunk_num + 1,
+                        error=str(e),
+                    )
+
+        async def run_all_chunks() -> None:
+            """Run all chunk processing tasks and signal completion."""
+            tasks = [
+                asyncio.create_task(process_chunk(i, chunk))
+                for i, chunk in enumerate(chunks)
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await output_queue.put(None)  # Signal completion
+
+        # Start chunk processing in background
+        chunk_task = asyncio.create_task(run_all_chunks())
+
+        # Yield references as they arrive, with deduplication
+        try:
+            while True:
+                ref = await output_queue.get()
+                if ref is None:
+                    break
+                if self._is_duplicate(ref, seen_dois, seen_titles):
+                    continue
+                self._mark_seen(ref, seen_dois, seen_titles)
+                yield ref
+        finally:
+            # Ensure chunk task completes
+            await chunk_task
+
+        logger.info(
+            "streaming_parse_complete",
+            total_yielded=len(seen_dois) + len(seen_titles),
+        )
+
+    def _is_duplicate(
+        self,
+        ref: ReferenceData,
+        seen_dois: set[str],
+        seen_titles: set[str],
+    ) -> bool:
+        """Check if a reference is a duplicate."""
+        if ref.doi and ref.doi in seen_dois:
+            return True
+        if ref.title:
+            norm_title = ref.title.lower().strip()
+            if norm_title in seen_titles:
+                return True
+        return False
+
+    def _mark_seen(
+        self,
+        ref: ReferenceData,
+        seen_dois: set[str],
+        seen_titles: set[str],
+    ) -> None:
+        """Mark a reference as seen for deduplication."""
+        if ref.doi:
+            seen_dois.add(ref.doi)
+        if ref.title:
+            seen_titles.add(ref.title.lower().strip())
+
     async def _parse_chunked(self, text: str) -> list[ReferenceData]:
-        """Parse text in chunks and combine results."""
+        """Parse text in chunks with parallel processing and combine results."""
         chunks = self._create_chunks(text)
         logger.info("parsing_in_chunks", chunk_count=len(chunks))
 
-        all_references = []
+        all_references: list[ReferenceData] = []
+        semaphore = asyncio.Semaphore(self.max_concurrent_chunks)
 
-        for i, chunk in enumerate(chunks):
-            logger.info("parsing_chunk", chunk_num=i + 1, total=len(chunks))
-            try:
-                result = await self.provider.parse_references(chunk, self.system_prompt)
-                chunk_refs = self._convert_references(result)
-                all_references.extend(chunk_refs)
-            except Exception as e:
-                logger.error(
-                    "chunk_parsing_error",
-                    chunk_num=i + 1,
-                    error=str(e),
-                )
-                # Continue with other chunks
-                continue
+        async def process_chunk(chunk_num: int, chunk: str) -> list[ReferenceData]:
+            """Process a single chunk with semaphore."""
+            async with semaphore:
+                logger.info("parsing_chunk", chunk_num=chunk_num + 1, total=len(chunks))
+                try:
+                    result = await self.provider.parse_references(
+                        chunk, self.system_prompt
+                    )
+                    return self._convert_references(result)
+                except Exception as e:
+                    logger.error(
+                        "chunk_parsing_error",
+                        chunk_num=chunk_num + 1,
+                        error=str(e),
+                    )
+                    return []
+
+        # Process all chunks in parallel (limited by semaphore)
+        tasks = [
+            asyncio.create_task(process_chunk(i, chunk))
+            for i, chunk in enumerate(chunks)
+        ]
+        results = await asyncio.gather(*tasks)
+
+        for chunk_refs in results:
+            all_references.extend(chunk_refs)
 
         return all_references
 
@@ -153,19 +300,29 @@ class ReferenceParser:
         while current_pos < len(text):
             end_pos = min(current_pos + self.chunk_size, len(text))
 
-            if end_pos < len(text):
-                # Find a good break point
-                for sep in ["\n\n", "\n", ". "]:
-                    break_pos = text.rfind(sep, current_pos, end_pos)
-                    if break_pos > current_pos + self.chunk_size // 2:
-                        end_pos = break_pos + len(sep)
-                        break
+            # If this is the last chunk, just take it
+            if end_pos >= len(text):
+                chunk = text[current_pos:].strip()
+                if chunk:
+                    chunks.append(chunk)
+                break
+
+            # Find a good break point
+            for sep in ["\n\n", "\n", ". "]:
+                break_pos = text.rfind(sep, current_pos, end_pos)
+                if break_pos > current_pos + self.chunk_size // 2:
+                    end_pos = break_pos + len(sep)
+                    break
 
             chunk = text[current_pos:end_pos].strip()
             if chunk:
                 chunks.append(chunk)
 
-            current_pos = end_pos - self.chunk_overlap
+            # Ensure we always advance
+            next_pos = end_pos - self.chunk_overlap
+            if next_pos <= current_pos:
+                next_pos = end_pos
+            current_pos = next_pos
 
         return chunks
 

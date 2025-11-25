@@ -117,10 +117,10 @@ def run():
         with st.expander("Advanced Settings"):
             chunk_size = st.number_input(
                 "PDF Chunk Size",
-                min_value=10000,
-                max_value=100000,
-                value=50000,
-                step=5000,
+                min_value=2000,
+                max_value=10000,
+                value=4000,
+                step=200,
                 help="Maximum characters per chunk for LLM processing",
             )
 

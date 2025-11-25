@@ -6,9 +6,14 @@ Coordinates:
 2. LLM reference parsing
 3. OpenAlex validation
 4. Export to Excel/JSON
+
+Supports two execution modes:
+1. Sequential: Process all chunks, then all validations
+2. Streaming: Parse chunks in parallel, validate as references arrive
 """
 
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import structlog
@@ -33,12 +38,20 @@ class Pipeline:
     """
     Main pipeline orchestrator for reference validation.
 
+    By default, uses streaming parallel processing:
+    - Chunks are parsed by LLM in parallel (up to max_concurrent_chunks)
+    - Validation starts as soon as first references are available
+    - Deduplication happens on-the-fly
+
     Usage:
         config = Config(...)
         pipeline = Pipeline(config)
 
-        # Process a PDF
+        # Process a PDF (parallel by default)
         result = await pipeline.process("paper.pdf")
+
+        # Force sequential processing (for debugging)
+        result = await pipeline.process("paper.pdf", streaming=False)
 
         # Export results
         pipeline.export(result, "references.xlsx")
@@ -70,6 +83,7 @@ class Pipeline:
         self.reference_parser = ReferenceParser(
             provider=self.llm_provider,
             chunk_size=config.pdf_chunk_size,
+            max_concurrent_chunks=config.max_concurrent_chunks,
         )
 
         self.validator = OpenAlexValidator(
@@ -89,21 +103,39 @@ class Pipeline:
         self,
         source: str | Path,
         extract_references_only: bool = True,
+        streaming: bool = True,
     ) -> PipelineResult:
         """
         Process a PDF file through the complete pipeline.
 
+        By default uses streaming parallel processing for better performance.
+
         Args:
             source: Path to PDF file
             extract_references_only: Try to extract just references section
+            streaming: Use parallel streaming mode (default: True)
 
         Returns:
             Complete pipeline result
         """
+        if streaming:
+            return await self._process_streaming(source, extract_references_only)
+        return await self._process_sequential(source, extract_references_only)
+
+    async def _process_sequential(
+        self,
+        source: str | Path,
+        extract_references_only: bool = True,
+    ) -> PipelineResult:
+        """
+        Process a PDF file sequentially (parse all, then validate all).
+
+        Used internally when streaming=False is passed to process().
+        """
         start_time = time.time()
         source = Path(source)
 
-        logger.info("pipeline_start", source=str(source))
+        logger.info("pipeline_sequential_start", source=str(source))
 
         result = PipelineResult(source_file=str(source))
 
@@ -154,6 +186,100 @@ class Pipeline:
         result.total_processing_time_seconds = time.time() - start_time
 
         logger.info(
+            "pipeline_sequential_complete",
+            total=result.total_references,
+            validated=result.validated_count,
+            time_seconds=round(result.total_processing_time_seconds, 2),
+        )
+
+        return result
+
+    async def _process_streaming(
+        self,
+        source: str | Path,
+        extract_references_only: bool = True,
+    ) -> PipelineResult:
+        """
+        Process a PDF file with streaming parallel pipeline.
+
+        Used internally as the default mode for process().
+        """
+        start_time = time.time()
+        source = Path(source)
+        max_concurrent = self.config.max_concurrent_validations
+
+        logger.info("pipeline_start", source=str(source))
+
+        result = PipelineResult(source_file=str(source))
+
+        try:
+            # Step 1: Extract text from PDF
+            logger.info("step_1_extraction")
+            extraction = self.pdf_extractor.extract(source)
+            result.extraction = extraction
+
+            # Try to get just the references section
+            text = extraction.text
+            if extract_references_only:
+                refs_section = self.pdf_extractor.extract_references_section(text)
+                if refs_section:
+                    text = refs_section
+                    logger.info(
+                        "using_references_section",
+                        full_length=len(extraction.text),
+                        refs_length=len(refs_section),
+                    )
+
+            # Step 2 & 3: Stream parse and validate in parallel
+            logger.info("step_2_3_streaming_parse_and_validate")
+
+            # Create async generator from parser
+            reference_stream = self.reference_parser.parse_streaming(text)
+
+            # Stream to validator and collect results
+            validation_results: list[ValidationResult] = []
+            parsed_references: list[ReferenceData] = []
+
+            # We need to collect parsed refs while streaming to validator
+            async def tracked_stream() -> AsyncIterator[ReferenceData]:
+                async for ref in reference_stream:
+                    parsed_references.append(ref)
+                    yield ref
+
+            async for validation_result in self.validator.validate_streaming(
+                tracked_stream(),
+                max_concurrent=max_concurrent,
+            ):
+                validation_results.append(validation_result)
+
+            # Build parse result from collected references
+            result.parse_result = ParseResult(
+                references=parsed_references,
+                source_text=text[:1000],
+                model_used=self.llm_provider.model,
+                processing_time_seconds=time.time() - start_time,
+            )
+
+            result.validation_results = validation_results
+
+            # Compute statistics
+            result.compute_stats()
+
+            if not parsed_references:
+                logger.warning("no_references_found")
+                result.total_references = 0
+
+        except Exception as e:
+            logger.error("pipeline_streaming_error", error=str(e))
+            raise
+
+        finally:
+            # Cleanup
+            await self.validator.close()
+
+        result.total_processing_time_seconds = time.time() - start_time
+
+        logger.info(
             "pipeline_complete",
             total=result.total_references,
             validated=result.validated_count,
@@ -162,19 +288,32 @@ class Pipeline:
 
         return result
 
-    async def process_text(self, text: str) -> PipelineResult:
+    async def process_text(
+        self,
+        text: str,
+        streaming: bool = True,
+    ) -> PipelineResult:
         """
         Process text containing references through the pipeline.
 
+        By default uses streaming parallel processing.
+
         Args:
             text: Text containing references
+            streaming: Use parallel streaming mode (default: True)
 
         Returns:
             Pipeline result
         """
+        if streaming:
+            return await self._process_text_streaming(text)
+        return await self._process_text_sequential(text)
+
+    async def _process_text_sequential(self, text: str) -> PipelineResult:
+        """Process text sequentially (parse all, then validate all)."""
         start_time = time.time()
 
-        logger.info("pipeline_text_start", text_length=len(text))
+        logger.info("pipeline_text_sequential_start", text_length=len(text))
 
         result = PipelineResult()
 
@@ -213,7 +352,73 @@ class Pipeline:
         result.total_processing_time_seconds = time.time() - start_time
 
         logger.info(
-            "pipeline_complete",
+            "pipeline_text_sequential_complete",
+            total=result.total_references,
+            validated=result.validated_count,
+            time_seconds=round(result.total_processing_time_seconds, 2),
+        )
+
+        return result
+
+    async def _process_text_streaming(self, text: str) -> PipelineResult:
+        """Process text with streaming parallel pipeline."""
+        start_time = time.time()
+        max_concurrent = self.config.max_concurrent_validations
+
+        logger.info("pipeline_text_start", text_length=len(text))
+
+        result = PipelineResult()
+
+        try:
+            # Create extraction result for text input
+            result.extraction = ExtractionResult(
+                text=text,
+                source_file="text_input",
+            )
+
+            # Stream parse and validate in parallel
+            logger.info("streaming_parse_and_validate")
+
+            reference_stream = self.reference_parser.parse_streaming(text)
+
+            validation_results: list[ValidationResult] = []
+            parsed_references: list[ReferenceData] = []
+
+            async def tracked_stream() -> AsyncIterator[ReferenceData]:
+                async for ref in reference_stream:
+                    parsed_references.append(ref)
+                    yield ref
+
+            async for validation_result in self.validator.validate_streaming(
+                tracked_stream(),
+                max_concurrent=max_concurrent,
+            ):
+                validation_results.append(validation_result)
+
+            result.parse_result = ParseResult(
+                references=parsed_references,
+                source_text=text[:1000],
+                model_used=self.llm_provider.model,
+                processing_time_seconds=time.time() - start_time,
+            )
+
+            result.validation_results = validation_results
+            result.compute_stats()
+
+            if not parsed_references:
+                logger.warning("no_references_found")
+
+        except Exception as e:
+            logger.error("pipeline_text_streaming_error", error=str(e))
+            raise
+
+        finally:
+            await self.validator.close()
+
+        result.total_processing_time_seconds = time.time() - start_time
+
+        logger.info(
+            "pipeline_text_complete",
             total=result.total_references,
             validated=result.validated_count,
             time_seconds=round(result.total_processing_time_seconds, 2),

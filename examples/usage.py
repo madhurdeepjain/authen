@@ -91,8 +91,8 @@ async def example_pdf_extraction_only():
     from authen.pdf import PDFExtractor
 
     extractor = PDFExtractor(
-        chunk_size=50000,
-        chunk_overlap=1000,
+        chunk_size=4000,
+        chunk_overlap=400,
     )
 
     # Extract text

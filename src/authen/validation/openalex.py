@@ -6,9 +6,13 @@ Implements best practices from OpenAlex LLM API guide:
 - Batch DOI lookups (up to 50)
 - Exponential backoff on errors
 - Select only needed fields for performance
+
+Supports streaming mode where validation starts as soon as
+references become available from the parser.
 """
 
 import asyncio
+from collections.abc import AsyncIterator
 from urllib.parse import quote
 
 import httpx
@@ -364,6 +368,170 @@ class OpenAlexValidator:
     async def close(self) -> None:
         """Close the client."""
         await self.client.close()
+
+    async def validate_streaming(
+        self,
+        references: AsyncIterator[ReferenceData],
+        max_concurrent: int = 5,
+    ) -> AsyncIterator[ValidationResult]:
+        """
+        Validate references in streaming mode.
+
+        Processes references as they arrive, validating in parallel
+        while respecting rate limits. DOI references are batched
+        when possible for efficiency.
+
+        Args:
+            references: Async iterator of references (e.g., from parser)
+            max_concurrent: Maximum concurrent validation tasks
+
+        Yields:
+            ValidationResult as each reference is validated
+        """
+        logger.info("starting_streaming_validation")
+
+        # Semaphore for concurrency control (rate limit is handled by aiolimiter)
+        semaphore = asyncio.Semaphore(max_concurrent)
+        output_queue: asyncio.Queue[ValidationResult | None] = asyncio.Queue()
+        pending_tasks: set[asyncio.Task] = set()
+
+        # DOI batching state
+        doi_batch: list[ReferenceData] = []
+        doi_batch_lock = asyncio.Lock()
+        DOI_BATCH_SIZE = 25  # Batch DOIs for efficiency (max 50)
+        DOI_BATCH_TIMEOUT = 0.5  # Flush batch after this many seconds
+
+        async def validate_single(ref: ReferenceData) -> None:
+            """Validate a single non-DOI reference."""
+            async with semaphore:
+                try:
+                    result = await self._validate_by_search(ref)
+                    await output_queue.put(result)
+                except Exception as e:
+                    logger.error("streaming_validation_error", error=str(e))
+                    await output_queue.put(
+                        ValidationResult(
+                            original=ref,
+                            status=ValidationStatus.ERROR,
+                            error_message=str(e),
+                        )
+                    )
+
+        async def flush_doi_batch() -> None:
+            """Flush the current DOI batch."""
+            async with doi_batch_lock:
+                if not doi_batch:
+                    return
+                batch = doi_batch.copy()
+                doi_batch.clear()
+
+            if batch:
+                async with semaphore:
+                    try:
+                        results = await self._validate_by_doi(batch)
+                        for result in results:
+                            await output_queue.put(result)
+                    except Exception as e:
+                        logger.error("doi_batch_validation_error", error=str(e))
+                        for ref in batch:
+                            await output_queue.put(
+                                ValidationResult(
+                                    original=ref,
+                                    status=ValidationStatus.ERROR,
+                                    error_message=str(e),
+                                )
+                            )
+
+        async def batch_flush_timer() -> None:
+            """Periodically flush DOI batch to avoid waiting too long."""
+            while True:
+                await asyncio.sleep(DOI_BATCH_TIMEOUT)
+                await flush_doi_batch()
+
+        # Start batch flush timer
+        flush_timer_task = asyncio.create_task(batch_flush_timer())
+
+        async def process_references() -> None:
+            """Process all incoming references."""
+            try:
+                async for ref in references:
+                    if ref.doi:
+                        # Add to DOI batch
+                        batch_to_process = None
+                        async with doi_batch_lock:
+                            doi_batch.append(ref)
+                            if len(doi_batch) >= DOI_BATCH_SIZE:
+                                batch_to_process = doi_batch.copy()
+                                doi_batch.clear()
+
+                        if batch_to_process:
+                            task = asyncio.create_task(
+                                self._validate_doi_batch_and_queue(
+                                    batch_to_process, semaphore, output_queue
+                                )
+                            )
+                            pending_tasks.add(task)
+                            task.add_done_callback(pending_tasks.discard)
+                    else:
+                        # Validate immediately
+                        task = asyncio.create_task(validate_single(ref))
+                        pending_tasks.add(task)
+                        task.add_done_callback(pending_tasks.discard)
+
+                # Flush remaining DOI batch
+                await flush_doi_batch()
+
+                # Wait for all pending tasks
+                if pending_tasks:
+                    await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+            finally:
+                flush_timer_task.cancel()
+                try:
+                    await flush_timer_task
+                except asyncio.CancelledError:
+                    pass
+                await output_queue.put(None)  # Signal completion
+
+        # Start processing in background
+        process_task = asyncio.create_task(process_references())
+
+        # Yield results as they arrive
+        validated_count = 0
+        try:
+            while True:
+                result = await output_queue.get()
+                if result is None:
+                    break
+                validated_count += 1
+                yield result
+        finally:
+            await process_task
+
+        logger.info("streaming_validation_complete", total=validated_count)
+
+    async def _validate_doi_batch_and_queue(
+        self,
+        batch: list[ReferenceData],
+        semaphore: asyncio.Semaphore,
+        output_queue: asyncio.Queue,
+    ) -> None:
+        """Validate a batch of DOI references and put results in queue."""
+        async with semaphore:
+            try:
+                results = await self._validate_by_doi(batch)
+                for result in results:
+                    await output_queue.put(result)
+            except Exception as e:
+                logger.error("doi_batch_validation_error", error=str(e))
+                for ref in batch:
+                    await output_queue.put(
+                        ValidationResult(
+                            original=ref,
+                            status=ValidationStatus.ERROR,
+                            error_message=str(e),
+                        )
+                    )
 
     async def validate(
         self,
