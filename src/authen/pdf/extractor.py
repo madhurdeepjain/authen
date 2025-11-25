@@ -1,13 +1,14 @@
 """
 PDF text extraction with support for large documents.
 
-Provides robust text extraction with chunking capabilities
+Provides text extraction with chunking capabilities
 for processing large PDFs with LLMs.
 """
 
 import re
 from pathlib import Path
 
+import pdfplumber
 import structlog
 
 from authen.core.schemas import ExtractionResult
@@ -19,7 +20,7 @@ class PDFExtractor:
     """
     Extract text from PDF documents with chunking support.
 
-    Supports multiple extraction backends and handles large documents
+    Uses pdfplumber for extraction and handles large documents
     by splitting into manageable chunks for LLM processing.
     """
 
@@ -27,7 +28,6 @@ class PDFExtractor:
         self,
         chunk_size: int = 50000,
         chunk_overlap: int = 1000,
-        prefer_backend: str = "pymupdf",
     ):
         """
         Initialize the PDF extractor.
@@ -35,11 +35,9 @@ class PDFExtractor:
         Args:
             chunk_size: Maximum characters per chunk
             chunk_overlap: Overlap between chunks to preserve context
-            prefer_backend: Preferred extraction backend ('pymupdf' or 'pdfplumber')
         """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.prefer_backend = prefer_backend
 
     def extract(self, file_path: str | Path) -> ExtractionResult:
         """
@@ -57,27 +55,20 @@ class PDFExtractor:
 
         logger.info("extracting_pdf", file=str(file_path))
 
-        # Try primary backend
-        try:
-            if self.prefer_backend == "pymupdf":
-                text, page_count, metadata = self._extract_pymupdf(file_path)
-            else:
-                text, page_count, metadata = self._extract_pdfplumber(file_path)
-        except Exception as e:
-            logger.warning(
-                "primary_extraction_failed",
-                backend=self.prefer_backend,
-                error=str(e),
-            )
-            # Try fallback
-            try:
-                if self.prefer_backend == "pymupdf":
-                    text, page_count, metadata = self._extract_pdfplumber(file_path)
-                else:
-                    text, page_count, metadata = self._extract_pymupdf(file_path)
-            except Exception as e2:
-                logger.error("all_extraction_failed", error=str(e2))
-                raise RuntimeError(f"Failed to extract text from PDF: {e2}") from e2
+        text_parts = []
+        page_count = 0
+        metadata = {}
+
+        with pdfplumber.open(file_path) as pdf:
+            page_count = len(pdf.pages)
+            metadata = pdf.metadata or {}
+
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text_parts.append(page_text)
+
+        text = "\n".join(text_parts)
 
         # Clean up text
         text = self._clean_text(text)
@@ -99,47 +90,6 @@ class PDFExtractor:
             chunks=chunks,
             metadata=metadata,
         )
-
-    def _extract_pymupdf(self, file_path: Path) -> tuple[str, int, dict]:
-        """Extract text using PyMuPDF (fitz)."""
-        import fitz  # PyMuPDF
-
-        doc = fitz.open(file_path)
-        text_parts = []
-        page_count = len(doc)  # Get page count before closing
-        metadata = {
-            "title": doc.metadata.get("title", ""),
-            "author": doc.metadata.get("author", ""),
-            "subject": doc.metadata.get("subject", ""),
-            "creator": doc.metadata.get("creator", ""),
-        }
-
-        for page_num in range(page_count):
-            page = doc[page_num]
-            text_parts.append(page.get_text())
-
-        doc.close()
-
-        return "\n".join(text_parts), page_count, metadata
-
-    def _extract_pdfplumber(self, file_path: Path) -> tuple[str, int, dict]:
-        """Extract text using pdfplumber."""
-        import pdfplumber
-
-        text_parts = []
-        page_count = 0
-        metadata = {}
-
-        with pdfplumber.open(file_path) as pdf:
-            page_count = len(pdf.pages)
-            metadata = pdf.metadata or {}
-
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text_parts.append(page_text)
-
-        return "\n".join(text_parts), page_count, metadata
 
     def _clean_text(self, text: str) -> str:
         """Clean extracted text."""

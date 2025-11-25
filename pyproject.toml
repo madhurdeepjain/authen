@@ -21,7 +21,6 @@ classifiers = [
 ]
 dependencies = [
     # PDF Processing
-    "pymupdf>=1.23.0",
     "pdfplumber>=0.10.0",
 
     # LLM Providers
