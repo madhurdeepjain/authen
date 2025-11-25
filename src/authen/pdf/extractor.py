@@ -119,29 +119,38 @@ class PDFExtractor:
             # Calculate end position
             end_pos = min(current_pos + self.chunk_size, len(text))
 
-            if end_pos < len(text):
-                # Try to find a good break point (paragraph or sentence)
-                # Look for paragraph break
-                paragraph_break = text.rfind("\n\n", current_pos, end_pos)
-                if paragraph_break > current_pos + self.chunk_size // 2:
-                    end_pos = paragraph_break + 2
+            # If this is the last chunk (reaches end of text), just take it
+            if end_pos >= len(text):
+                chunk = text[current_pos:].strip()
+                if chunk:
+                    chunks.append(chunk)
+                break
 
-                else:
-                    # Look for sentence break
-                    sentence_breaks = [
-                        text.rfind(". ", current_pos, end_pos),
-                        text.rfind(".\n", current_pos, end_pos),
-                    ]
-                    best_break = max(sentence_breaks)
-                    if best_break > current_pos + self.chunk_size // 2:
-                        end_pos = best_break + 1
+            # Try to find a good break point (paragraph or sentence)
+            # Look for paragraph break
+            paragraph_break = text.rfind("\n\n", current_pos, end_pos)
+            if paragraph_break > current_pos + self.chunk_size // 2:
+                end_pos = paragraph_break + 2
+            else:
+                # Look for sentence break
+                sentence_breaks = [
+                    text.rfind(". ", current_pos, end_pos),
+                    text.rfind(".\n", current_pos, end_pos),
+                ]
+                best_break = max(sentence_breaks)
+                if best_break > current_pos + self.chunk_size // 2:
+                    end_pos = best_break + 1
 
             chunk = text[current_pos:end_pos].strip()
             if chunk:
                 chunks.append(chunk)
 
-            # Move position with overlap
-            current_pos = end_pos - self.chunk_overlap
+            # Move position forward, ensuring we always advance
+            next_pos = end_pos - self.chunk_overlap
+            if next_pos <= current_pos:
+                # Ensure we always advance at least 1 character
+                next_pos = end_pos
+            current_pos = next_pos
 
         return chunks
 
