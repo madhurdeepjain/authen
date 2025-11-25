@@ -82,4 +82,8 @@ output/
 references.json
 *.pdf
 
+# Cache database
+.authen_cache.db
+*.cache.db
+
 .DS_Store

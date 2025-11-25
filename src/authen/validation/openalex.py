@@ -1,11 +1,12 @@
 """
-OpenAlex API client with rate limiting and retry logic.
+OpenAlex API client with rate limiting, retry logic, and caching.
 
 Implements best practices from OpenAlex LLM API guide:
 - Use email for polite pool (10 req/sec)
 - Batch DOI lookups (up to 50)
 - Exponential backoff on errors
 - Select only needed fields for performance
+- Cache results to reduce API calls
 
 Supports streaming mode where validation starts as soon as
 references become available from the parser.
@@ -25,6 +26,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from authen.core.cache import CacheManager, get_cache
 from authen.core.schemas import (
     Affiliation,
     Author,
@@ -55,13 +57,14 @@ WORKS_SELECT_FIELDS = [
 
 class OpenAlexClient:
     """
-    Async client for OpenAlex API with rate limiting.
+    Async client for OpenAlex API with rate limiting and caching.
 
     Best practices implemented:
     - Email for polite pool (10 req/sec instead of 1)
     - Batch ID lookups using pipe separator
     - Exponential backoff on errors
     - Field selection for faster responses
+    - Response caching for efficiency
     """
 
     def __init__(
@@ -70,6 +73,8 @@ class OpenAlexClient:
         rate_limit: int = 10,
         max_retries: int = 5,
         timeout: int = 30,
+        cache: CacheManager | None = None,
+        enable_cache: bool = True,
     ):
         """
         Initialize the OpenAlex client.
@@ -79,16 +84,29 @@ class OpenAlexClient:
             rate_limit: Requests per second (max 10 with email)
             max_retries: Maximum retry attempts
             timeout: Request timeout in seconds
+            cache: Optional cache manager
+            enable_cache: Whether to enable caching
         """
         self.email = email
         self.max_retries = max_retries
         self.timeout = timeout
+        self._cache = cache
+        self._enable_cache = enable_cache
 
         # Rate limiter: X requests per second
         self.rate_limiter = AsyncLimiter(rate_limit, 1.0)
 
         # Reusable HTTP client
         self._client: httpx.AsyncClient | None = None
+
+    @property
+    def cache(self) -> CacheManager | None:
+        """Get the cache manager, initializing if needed."""
+        if not self._enable_cache:
+            return None
+        if self._cache is None:
+            self._cache = get_cache(enabled=True)
+        return self._cache
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client."""
@@ -164,6 +182,15 @@ class OpenAlexClient:
             Work object or None if not found
         """
         # Normalize DOI
+        norm_doi = doi.replace("https://doi.org/", "").lower()
+
+        # Check cache first
+        if self.cache:
+            cached = self.cache.get_openalex_result(norm_doi, "doi")
+            if cached:
+                logger.debug("openalex_cache_hit_doi", doi=norm_doi)
+                return cached
+
         if not doi.startswith("https://doi.org/"):
             doi = f"https://doi.org/{doi}"
 
@@ -173,6 +200,9 @@ class OpenAlexClient:
                 f"works/{quote(doi, safe='')}",
                 {"select": ",".join(WORKS_SELECT_FIELDS)},
             )
+            # Cache the result
+            if result and self.cache:
+                self.cache.set_openalex_result(norm_doi, "doi", result)
             return result
         except Exception as e:
             logger.warning("doi_lookup_failed", doi=doi, error=str(e))
@@ -189,10 +219,22 @@ class OpenAlexClient:
             Dict mapping DOI to work object (or None if not found)
         """
         results = {}
+        dois_to_fetch = []
 
-        # Process in batches of 50 (OpenAlex limit)
-        for i in range(0, len(dois), 50):
-            batch = dois[i : i + 50]
+        # Check cache for each DOI first
+        for doi in dois:
+            norm_doi = doi.replace("https://doi.org/", "").lower()
+            if self.cache:
+                cached = self.cache.get_openalex_result(norm_doi, "doi")
+                if cached:
+                    results[norm_doi] = cached
+                    logger.debug("openalex_batch_cache_hit", doi=norm_doi)
+                    continue
+            dois_to_fetch.append(doi)
+
+        # Process uncached DOIs in batches of 50 (OpenAlex limit)
+        for i in range(0, len(dois_to_fetch), 50):
+            batch = dois_to_fetch[i : i + 50]
 
             # Normalize DOIs
             normalized = []
@@ -219,14 +261,17 @@ class OpenAlexClient:
                         work_doi = work.get("doi", "")
                         if work_doi:
                             # Normalize the returned DOI for matching
-                            norm_doi = work_doi.replace("https://doi.org/", "")
+                            norm_doi = work_doi.replace("https://doi.org/", "").lower()
                             results[norm_doi] = work
+                            # Cache the result
+                            if self.cache:
+                                self.cache.set_openalex_result(norm_doi, "doi", work)
             except Exception as e:
                 logger.error("batch_doi_lookup_failed", error=str(e))
 
         # Fill in None for DOIs not found
         for doi in dois:
-            norm_doi = doi.replace("https://doi.org/", "")
+            norm_doi = doi.replace("https://doi.org/", "").lower()
             if norm_doi not in results:
                 results[norm_doi] = None
 
@@ -245,6 +290,16 @@ class OpenAlexClient:
         Returns:
             List of matching works
         """
+        # Generate cache key from normalized title
+        title_key = " ".join(title.lower().split())[:100]  # Limit key length
+
+        # Check cache first
+        if self.cache:
+            cached = self.cache.get_openalex_result(title_key, "title_search")
+            if cached:
+                logger.debug("openalex_cache_hit_title", title=title[:50])
+                return cached.get("results", [])
+
         params = {
             "filter": f"title.search:{quote(title)}",
             "per-page": "15",
@@ -254,7 +309,13 @@ class OpenAlexClient:
         try:
             response = await self._request("works", params)
             if response and "results" in response:
-                return response["results"]
+                results = response["results"]
+                # Cache the results
+                if self.cache:
+                    self.cache.set_openalex_result(
+                        title_key, "title_search", {"results": results}
+                    )
+                return results
         except Exception as e:
             logger.warning("title_search_failed", title=title, error=str(e))
 
@@ -344,6 +405,8 @@ class OpenAlexValidator:
         author_threshold: float = 0.7,
         max_retries: int = 5,
         timeout: int = 30,
+        cache: CacheManager | None = None,
+        enable_cache: bool = True,
     ):
         """
         Initialize the validator.
@@ -355,12 +418,16 @@ class OpenAlexValidator:
             author_threshold: Minimum author similarity (0-1)
             max_retries: Maximum retry attempts
             timeout: Request timeout
+            cache: Optional cache manager
+            enable_cache: Whether to enable caching
         """
         self.client = OpenAlexClient(
             email=email,
             rate_limit=rate_limit,
             max_retries=max_retries,
             timeout=timeout,
+            cache=cache,
+            enable_cache=enable_cache,
         )
         self.title_threshold = title_threshold
         self.author_threshold = author_threshold

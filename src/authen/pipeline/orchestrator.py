@@ -18,6 +18,7 @@ from pathlib import Path
 
 import structlog
 
+from authen.core.cache import CacheManager, SQLiteCache
 from authen.core.config import Config
 from authen.core.schemas import (
     ExtractionResult,
@@ -66,6 +67,27 @@ class Pipeline:
         """
         self.config = config
 
+        # Initialize cache if enabled
+        self._cache: CacheManager | None = None
+        if config.cache_enabled:
+            db_path = config.cache_db_path or ".authen_cache.db"
+            backend = SQLiteCache(
+                db_path=db_path,
+                default_ttl=config.cache_openalex_ttl,
+            )
+            self._cache = CacheManager(
+                backend=backend,
+                enabled=True,
+                llm_ttl=config.cache_llm_ttl,
+                openalex_ttl=config.cache_openalex_ttl,
+            )
+            logger.info(
+                "cache_initialized",
+                db_path=db_path,
+                llm_ttl=config.cache_llm_ttl,
+                openalex_ttl=config.cache_openalex_ttl,
+            )
+
         # Initialize components
         self.pdf_extractor = PDFExtractor(
             chunk_size=config.pdf_chunk_size,
@@ -78,6 +100,8 @@ class Pipeline:
             temperature=config.llm_temperature,
             max_tokens=config.llm_max_tokens,
             api_key=config.get_api_key(),
+            cache=self._cache,
+            enable_cache=config.cache_enabled,
         )
 
         self.reference_parser = ReferenceParser(
@@ -93,11 +117,24 @@ class Pipeline:
             author_threshold=config.validation_author_threshold,
             max_retries=config.openalex_max_retries,
             timeout=config.openalex_timeout,
+            cache=self._cache,
+            enable_cache=config.cache_enabled,
         )
 
         self.exporter = ExcelExporter(
             include_raw_openalex=config.export_include_raw_openalex,
         )
+
+    @property
+    def cache(self) -> CacheManager | None:
+        """Get the cache manager."""
+        return self._cache
+
+    def get_cache_stats(self) -> dict:
+        """Get cache statistics."""
+        if self._cache:
+            return self._cache.get_stats()
+        return {"enabled": False}
 
     async def process(
         self,

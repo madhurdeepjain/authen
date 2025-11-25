@@ -136,6 +136,24 @@ class Config(BaseSettings):
         description="Logging level (DEBUG, INFO, WARNING, ERROR)",
     )
 
+    # Caching Configuration
+    cache_enabled: bool = Field(
+        default=True,
+        description="Enable caching for LLM and OpenAlex responses",
+    )
+    cache_db_path: str | None = Field(
+        default=None,
+        description="Path to cache database (default: .authen_cache.db)",
+    )
+    cache_llm_ttl: int = Field(
+        default=86400 * 7,  # 1 week
+        description="TTL for LLM response cache in seconds",
+    )
+    cache_openalex_ttl: int = Field(
+        default=86400 * 30,  # 30 days
+        description="TTL for OpenAlex cache in seconds",
+    )
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

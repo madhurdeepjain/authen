@@ -5,6 +5,7 @@ Each provider supports:
 - Structured output for reliable parsing
 - Async operation
 - Web search capabilities (where available)
+- Response caching for efficiency
 """
 
 import json
@@ -13,6 +14,7 @@ from abc import ABC, abstractmethod
 
 import structlog
 
+from authen.core.cache import CacheManager, generate_text_hash, get_cache
 from authen.core.config import LLMProvider
 from authen.llm.schemas import ReferenceListOutput
 
@@ -28,11 +30,15 @@ class BaseLLMProvider(ABC):
         temperature: float = 0.0,
         max_tokens: int = 16384,
         api_key: str | None = None,
+        cache: CacheManager | None = None,
+        enable_cache: bool = True,
     ):
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.api_key = api_key
+        self._cache = cache
+        self._enable_cache = enable_cache
 
     @abstractmethod
     async def parse_references(
@@ -73,6 +79,19 @@ class BaseLLMProvider(ABC):
         """Get the provider name."""
         return self.__class__.__name__
 
+    @property
+    def cache(self) -> CacheManager | None:
+        """Get the cache manager, initializing if needed."""
+        if not self._enable_cache:
+            return None
+        if self._cache is None:
+            self._cache = get_cache(enabled=True)
+        return self._cache
+
+    def _get_prompt_hash(self, system_prompt: str) -> str:
+        """Generate a hash for the system prompt."""
+        return generate_text_hash(system_prompt)
+
 
 class OpenAIProvider(BaseLLMProvider):
     """OpenAI provider with structured output support."""
@@ -83,8 +102,10 @@ class OpenAIProvider(BaseLLMProvider):
         temperature: float = 0.0,
         max_tokens: int = 16384,
         api_key: str | None = None,
+        cache: CacheManager | None = None,
+        enable_cache: bool = True,
     ):
-        super().__init__(model, temperature, max_tokens, api_key)
+        super().__init__(model, temperature, max_tokens, api_key, cache, enable_cache)
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
 
         if not self.api_key:
@@ -100,6 +121,14 @@ class OpenAIProvider(BaseLLMProvider):
         system_prompt: str,
     ) -> ReferenceListOutput:
         """Parse references using OpenAI's structured output."""
+        # Check cache first
+        prompt_hash = self._get_prompt_hash(system_prompt)
+        if self.cache:
+            cached = self.cache.get_llm_response(text, self.model, prompt_hash)
+            if cached:
+                logger.info("cache_hit_openai", model=self.model, text_len=len(text))
+                return ReferenceListOutput.model_validate(cached)
+
         logger.info("parsing_with_openai", model=self.model, text_len=len(text))
 
         response = await self.client.beta.chat.completions.parse(
@@ -114,13 +143,22 @@ class OpenAIProvider(BaseLLMProvider):
         )
 
         if response.choices[0].message.parsed:
-            return response.choices[0].message.parsed
+            result = response.choices[0].message.parsed
         else:
             # Fallback to manual parsing
             content = response.choices[0].message.content
             if content:
-                return ReferenceListOutput.model_validate_json(content)
-            raise ValueError("Failed to parse response from OpenAI")
+                result = ReferenceListOutput.model_validate_json(content)
+            else:
+                raise ValueError("Failed to parse response from OpenAI")
+
+        # Cache the result
+        if self.cache:
+            self.cache.set_llm_response(
+                text, self.model, result.model_dump(), prompt_hash
+            )
+
+        return result
 
     async def search_and_validate(self, query: str) -> dict:
         """Use OpenAI with web search for validation."""
@@ -139,8 +177,10 @@ class AnthropicProvider(BaseLLMProvider):
         temperature: float = 0.0,
         max_tokens: int = 16384,
         api_key: str | None = None,
+        cache: CacheManager | None = None,
+        enable_cache: bool = True,
     ):
-        super().__init__(model, temperature, max_tokens, api_key)
+        super().__init__(model, temperature, max_tokens, api_key, cache, enable_cache)
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
 
         if not self.api_key:
@@ -156,6 +196,14 @@ class AnthropicProvider(BaseLLMProvider):
         system_prompt: str,
     ) -> ReferenceListOutput:
         """Parse references using Anthropic Claude with native structured output."""
+        # Check cache first
+        prompt_hash = self._get_prompt_hash(system_prompt)
+        if self.cache:
+            cached = self.cache.get_llm_response(text, self.model, prompt_hash)
+            if cached:
+                logger.info("cache_hit_anthropic", model=self.model, text_len=len(text))
+                return ReferenceListOutput.model_validate(cached)
+
         logger.info("parsing_with_anthropic", model=self.model, text_len=len(text))
 
         # Create JSON schema for structured output
@@ -187,7 +235,13 @@ class AnthropicProvider(BaseLLMProvider):
         try:
             for block in response.content:
                 if block.type == "tool_use" and block.name == "extract_references":
-                    return ReferenceListOutput.model_validate(block.input)
+                    result = ReferenceListOutput.model_validate(block.input)
+                    # Cache the result
+                    if self.cache:
+                        self.cache.set_llm_response(
+                            text, self.model, result.model_dump(), prompt_hash
+                        )
+                    return result
             raise ValueError("No tool_use block found in response")
         except Exception as e:
             logger.error("anthropic_parse_error", error=str(e))
@@ -209,8 +263,10 @@ class OllamaProvider(BaseLLMProvider):
         max_tokens: int = 16384,
         base_url: str = "http://localhost:11434",
         api_key: str | None = None,
+        cache: CacheManager | None = None,
+        enable_cache: bool = True,
     ):
-        super().__init__(model, temperature, max_tokens, api_key)
+        super().__init__(model, temperature, max_tokens, api_key, cache, enable_cache)
         self.base_url = base_url
 
     async def parse_references(
@@ -220,6 +276,14 @@ class OllamaProvider(BaseLLMProvider):
     ) -> ReferenceListOutput:
         """Parse references using Ollama."""
         import httpx
+
+        # Check cache first
+        prompt_hash = self._get_prompt_hash(system_prompt)
+        if self.cache:
+            cached = self.cache.get_llm_response(text, self.model, prompt_hash)
+            if cached:
+                logger.info("cache_hit_ollama", model=self.model, text_len=len(text))
+                return ReferenceListOutput.model_validate(cached)
 
         logger.info("parsing_with_ollama", model=self.model, text_len=len(text))
 
@@ -256,7 +320,13 @@ Return ONLY the JSON object, no other text."""
         content = result.get("response", "")
 
         try:
-            return ReferenceListOutput.model_validate_json(content)
+            parsed_result = ReferenceListOutput.model_validate_json(content)
+            # Cache the result
+            if self.cache:
+                self.cache.set_llm_response(
+                    text, self.model, parsed_result.model_dump(), prompt_hash
+                )
+            return parsed_result
         except Exception as e:
             logger.error("ollama_parse_error", error=str(e), content=content[:500])
             raise ValueError(f"Failed to parse Ollama response: {e}")
@@ -275,8 +345,10 @@ class GoogleProvider(BaseLLMProvider):
         temperature: float = 0.0,
         max_tokens: int = 16384,
         api_key: str | None = None,
+        cache: CacheManager | None = None,
+        enable_cache: bool = True,
     ):
-        super().__init__(model, temperature, max_tokens, api_key)
+        super().__init__(model, temperature, max_tokens, api_key, cache, enable_cache)
         self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
 
         if not self.api_key:
@@ -293,6 +365,14 @@ class GoogleProvider(BaseLLMProvider):
     ) -> ReferenceListOutput:
         """Parse references using Google Gemini with JSON output."""
         import asyncio
+
+        # Check cache first
+        prompt_hash = self._get_prompt_hash(system_prompt)
+        if self.cache:
+            cached = self.cache.get_llm_response(text, self.model, prompt_hash)
+            if cached:
+                logger.info("cache_hit_google", model=self.model, text_len=len(text))
+                return ReferenceListOutput.model_validate(cached)
 
         logger.info("parsing_with_google", model=self.model, text_len=len(text))
 
@@ -339,7 +419,13 @@ Text to parse:
         content = await loop.run_in_executor(None, _generate)
 
         try:
-            return ReferenceListOutput.model_validate_json(content)
+            parsed_result = ReferenceListOutput.model_validate_json(content)
+            # Cache the result
+            if self.cache:
+                self.cache.set_llm_response(
+                    text, self.model, parsed_result.model_dump(), prompt_hash
+                )
+            return parsed_result
         except Exception as e:
             content_preview = content[-500:] if content else "None"
             logger.error("google_parse_error", error=str(e), content=content_preview)

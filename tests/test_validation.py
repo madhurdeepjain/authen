@@ -116,7 +116,10 @@ async def test_extract_reference_data():
             "last_page": "130",
         },
         "cited_by_count": 42,
-        "is_oa": True,
+        "open_access": {
+            "is_oa": True,
+            "oa_status": "gold",
+        },
     }
 
     ref = validator._extract_reference_data(work, original)

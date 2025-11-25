@@ -131,6 +131,49 @@ def main():
         help="LLM model name",
     )
 
+    # Cache command
+    cache_parser = subparsers.add_parser(
+        "cache",
+        help="Manage the response cache",
+    )
+    cache_subparsers = cache_parser.add_subparsers(dest="cache_command")
+
+    cache_stats_parser = cache_subparsers.add_parser(
+        "stats",
+        help="Show cache statistics",
+    )
+    cache_stats_parser.add_argument(
+        "--db-path",
+        help="Path to cache database",
+        default=".authen_cache.db",
+    )
+
+    cache_clear_parser = cache_subparsers.add_parser(
+        "clear",
+        help="Clear cached data",
+    )
+    cache_clear_parser.add_argument(
+        "--type",
+        choices=["all", "llm", "openalex"],
+        default="all",
+        help="Type of cache to clear",
+    )
+    cache_clear_parser.add_argument(
+        "--db-path",
+        help="Path to cache database",
+        default=".authen_cache.db",
+    )
+
+    cache_cleanup_parser = cache_subparsers.add_parser(
+        "cleanup",
+        help="Remove expired cache entries",
+    )
+    cache_cleanup_parser.add_argument(
+        "--db-path",
+        help="Path to cache database",
+        default=".authen_cache.db",
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -145,6 +188,8 @@ def main():
             asyncio.run(cmd_validate(args))
         elif args.command == "parse":
             asyncio.run(cmd_parse(args))
+        elif args.command == "cache":
+            cmd_cache(args)
     except KeyboardInterrupt:
         print("\nInterrupted")
         sys.exit(1)
@@ -292,6 +337,48 @@ def get_default_model(provider: str) -> str:
         "ollama": "gemma3:27b",
     }
     return defaults.get(provider, "gemini-2.5-flash")
+
+
+def cmd_cache(args):
+    """Manage the response cache."""
+    from authen.core.cache import SQLiteCache
+
+    db_path = getattr(args, "db_path", ".authen_cache.db")
+
+    if args.cache_command == "stats":
+        cache = SQLiteCache(db_path=db_path)
+        try:
+            stats = cache.get_stats()
+            print("\n📊 Cache Statistics")
+            print(f"   Database: {db_path}")
+            print(f"   Total entries: {stats.get('total_entries', 0) or 0}")
+            print(f"   LLM entries: {stats.get('llm_entries', 0) or 0}")
+            print(f"   OpenAlex entries: {stats.get('openalex_entries', 0) or 0}")
+            print(f"   Expired entries: {stats.get('expired_entries', 0) or 0}")
+        finally:
+            cache.close()
+
+    elif args.cache_command == "clear":
+        cache = SQLiteCache(db_path=db_path)
+        try:
+            cache_type = args.type if args.type != "all" else None
+            cache.clear(cache_type=cache_type)
+            type_str = f"{args.type} " if args.type != "all" else ""
+            print(f"✅ Cleared {type_str}cache")
+        finally:
+            cache.close()
+
+    elif args.cache_command == "cleanup":
+        cache = SQLiteCache(db_path=db_path)
+        try:
+            count = cache.cleanup_expired()
+            print(f"✅ Removed {count} expired entries")
+        finally:
+            cache.close()
+
+    else:
+        print("Usage: authen cache [stats|clear|cleanup]")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
