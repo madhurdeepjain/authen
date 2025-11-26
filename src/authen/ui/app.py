@@ -223,6 +223,7 @@ def run():
                     "Extracted Text",
                     value=st.session_state.preview_text,
                     height=300,
+                    key="extracted_text_preview",
                 )
 
     else:
@@ -762,6 +763,7 @@ async def process_with_progress(
                         "Extracted Text",
                         value=event.data.text,
                         height=300,
+                        key="extracted_text_preview",
                     )
             
             elif event.type == PipelineEventType.CHUNK_PROCESSED:
