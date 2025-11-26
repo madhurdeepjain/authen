@@ -113,6 +113,10 @@ class Config(BaseSettings):
         default=400,
         description="Overlap between chunks to avoid splitting references",
     )
+    pdf_x_tolerance: float = Field(
+        default=1.5,
+        description="Horizontal tolerance for character merging (pdfplumber)",
+    )
 
     # Parallel Processing
     max_concurrent_chunks: int = Field(

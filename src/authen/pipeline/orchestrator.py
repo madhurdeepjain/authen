@@ -96,6 +96,7 @@ class Pipeline:
         self.pdf_extractor = PDFExtractor(
             chunk_size=config.pdf_chunk_size,
             chunk_overlap=config.pdf_chunk_overlap,
+            x_tolerance=config.pdf_x_tolerance,
         )
 
         self.llm_provider = get_provider(

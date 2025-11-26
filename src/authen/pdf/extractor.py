@@ -28,6 +28,7 @@ class PDFExtractor:
         self,
         chunk_size: int = 4000,
         chunk_overlap: int = 400,
+        x_tolerance: float = 1.5,
     ):
         """
         Initialize the PDF extractor.
@@ -35,9 +36,11 @@ class PDFExtractor:
         Args:
             chunk_size: Maximum characters per chunk
             chunk_overlap: Overlap between chunks to preserve context
+            x_tolerance: Horizontal tolerance for character merging (pdfplumber)
         """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.x_tolerance = x_tolerance
 
     def extract(self, file_path: str | Path) -> ExtractionResult:
         """
@@ -64,7 +67,7 @@ class PDFExtractor:
             metadata = pdf.metadata or {}
 
             for page in pdf.pages:
-                page_text = page.extract_text()
+                page_text = page.extract_text(x_tolerance=self.x_tolerance)
                 if page_text:
                     text_parts.append(page_text)
 

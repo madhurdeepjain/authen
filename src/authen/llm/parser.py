@@ -32,12 +32,20 @@ Your task is to extract structured bibliographic information from reference text
 
 INSTRUCTIONS:
 1. Parse each reference carefully, extracting all available fields
-2. For author names, split into first_name and last_name when possible
+2. For author names, split into first_name and last_name. If only last name/initial, use initial as first_name.
 3. Extract DOIs in their standard format (10.xxxx/yyyy)
-4. Recognize common reference formats: APA, MLA, Chicago, IEEE, Vancouver
-5. If information is ambiguous or unclear, make reasonable inferences
-6. Preserve the original reference number if present
-7. Include the raw_text for each reference
+4. Recognize common reference formats: APA, MLA, Chicago, IEEE, Vancouver, Harvard.
+5. If information is ambiguous or unclear, make reasonable inferences.
+6. Preserve the original reference number if present.
+7. Include the raw_text for each reference.
+8. IMPORTANT: Do not hallucinate. Only extract information present in the text.
+9. If a reference is incomplete but has enough info to be useful (e.g. author + year + title/journal), extract it.
+10. Handle references that span multiple lines.
+11. If authors are listed like "Smith, J., Doe, A.", parse all of them.
+12. If the title is missing, but journal/book info exists, try to infer the type correctly.
+13. IGNORE loose text, headers, footers, or page numbers that are not part of a citation.
+14. If you cannot extract a valid reference (no title, no author, no year), SKIP it. Do not return "N/A" entries.
+15. Handle "Author (Year). Title." format. Ensure the Title is extracted, not just the Author/Year.
 
 WORK TYPES:
 - article: Journal article
@@ -166,7 +174,7 @@ class ReferenceParser:
             # Single chunk - just parse and yield
             result = await self.provider.parse_references(text, self.system_prompt)
             references = self._convert_references(result)
-            
+
             # Report progress for single chunk
             if on_chunk_complete:
                 if asyncio.iscoroutinefunction(on_chunk_complete):
@@ -176,6 +184,8 @@ class ReferenceParser:
 
             for ref in references:
                 if self._is_duplicate(ref, seen_dois, seen_titles):
+                    continue
+                if self._is_invalid_reference(ref):
                     continue
                 self._mark_seen(ref, seen_dois, seen_titles)
                 yield ref
@@ -215,7 +225,7 @@ class ReferenceParser:
                         async with progress_lock:
                             completed_chunks += 1
                             current_progress = completed_chunks
-                        
+
                         if asyncio.iscoroutinefunction(on_chunk_complete):
                             await on_chunk_complete(current_progress, len(chunks))
                         else:
@@ -240,6 +250,8 @@ class ReferenceParser:
                 if ref is None:
                     break
                 if self._is_duplicate(ref, seen_dois, seen_titles):
+                    continue
+                if self._is_invalid_reference(ref):
                     continue
                 self._mark_seen(ref, seen_dois, seen_titles)
                 yield ref
@@ -332,18 +344,35 @@ class ReferenceParser:
                 break
 
             # Find a good break point
+            # Prefer paragraph breaks, then single line breaks, then sentences
+            best_break = -1
             for sep in ["\n\n", "\n", ". "]:
                 break_pos = text.rfind(sep, current_pos, end_pos)
                 if break_pos > current_pos + self.chunk_size // 2:
-                    end_pos = break_pos + len(sep)
+                    # For newlines, include the newline in the current chunk
+                    if sep.startswith("\n"):
+                        end_pos = break_pos + len(sep)
+                    # For sentences, include the period in the current chunk
+                    else:
+                        end_pos = break_pos + 1
+                    best_break = break_pos
                     break
+
+            # If no good break point found in the second half, we'll just split at chunk_size
+            # (which is handled by the default end_pos assignment at the start of loop)
 
             chunk = text[current_pos:end_pos].strip()
             if chunk:
                 chunks.append(chunk)
 
             # Ensure we always advance
-            next_pos = end_pos - self.chunk_overlap
+            # If we found a good break, we don't need overlap
+            if best_break != -1:
+                next_pos = end_pos
+            else:
+                # If we forced a split, use overlap
+                next_pos = end_pos - self.chunk_overlap
+
             if next_pos <= current_pos:
                 next_pos = end_pos
             current_pos = next_pos
@@ -455,15 +484,26 @@ class ReferenceParser:
                 continue
 
             # Check by normalized title
-            if ref.title:
+            if ref.title and ref.title.lower() != "n/a":
                 norm_title = ref.title.lower().strip()
                 if norm_title in seen_titles:
                     continue
                 seen_titles.add(norm_title)
 
+            # If reference is effectively empty/invalid, skip it
+            if self._is_invalid_reference(ref):
+                continue
+
             unique_refs.append(ref)
 
         return unique_refs
+
+    def _is_invalid_reference(self, ref: ReferenceData) -> bool:
+        """Check if reference is invalid or empty."""
+        # Require a valid title. References without titles are not useful.
+        if not ref.title or ref.title.strip().lower() in ["n/a", "none", ""]:
+            return True
+        return False
 
 
 async def parse_text(
