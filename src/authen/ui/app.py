@@ -44,6 +44,45 @@ def run():
         "LLMs and OpenAlex."
     )
 
+    # Placeholder for dynamic CSS
+    css_placeholder = st.empty()
+
+    def set_progress_animation(enable: bool):
+        """Set or remove progress bar animation."""
+        if enable:
+            css_placeholder.markdown(
+                """
+                <style>
+                    .stProgress > div > div > div > div {
+                        background-image: linear-gradient(
+                            45deg,
+                            rgba(255, 255, 255, 0.15) 25%,
+                            transparent 25%,
+                            transparent 50%,
+                            rgba(255, 255, 255, 0.15) 50%,
+                            rgba(255, 255, 255, 0.15) 75%,
+                            transparent 75%,
+                            transparent
+                        );
+                        background-size: 1rem 1rem;
+                        animation: progress-bar-stripes 1s linear infinite;
+                    }
+
+                    @keyframes progress-bar-stripes {
+                        0% {
+                            background-position: 1rem 0;
+                        }
+                        100% {
+                            background-position: 0 0;
+                        }
+                    }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            css_placeholder.empty()
+
     # Sidebar configuration
     with st.sidebar:
         st.header("⚙️ Configuration")
@@ -274,6 +313,7 @@ def run():
             try:
                 # Progress bar
                 progress_bar = progress_placeholder.progress(0, text="Starting...")
+                set_progress_animation(True)
                 
                 # Render disabled filter to reserve space and match layout
                 with filter_container.container():
@@ -302,6 +342,7 @@ def run():
 
                 st.session_state.results = results
                 progress_bar.progress(1.0, text="Processing Complete!")
+                set_progress_animation(False)
                 
                 # Restore button
                 process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_restore")
