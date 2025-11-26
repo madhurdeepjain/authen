@@ -142,8 +142,8 @@ class Config(BaseSettings):
         description="Enable caching for LLM and OpenAlex responses",
     )
     cache_db_path: str | None = Field(
-        default=None,
-        description="Path to cache database (default: .authen_cache.db)",
+        default=".db/cache.db",
+        description="Path to cache database (default: .db/cache.db)",
     )
     cache_llm_ttl: int = Field(
         default=86400 * 7,  # 1 week

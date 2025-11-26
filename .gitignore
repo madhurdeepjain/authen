@@ -85,7 +85,6 @@ references.json
 .ruff_cache/
 
 # Cache database
-.authen_cache.db
-*.cache.db
+.db/
 
 .DS_Store

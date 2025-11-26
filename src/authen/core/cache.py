@@ -151,7 +151,7 @@ class SQLiteCache(CacheBackend):
 
     def __init__(
         self,
-        db_path: str | Path = ".authen_cache.db",
+        db_path: str | Path = ".db/cache.db",
         default_ttl: int = 86400 * 7,  # 1 week
     ):
         """
@@ -164,6 +164,9 @@ class SQLiteCache(CacheBackend):
         self.db_path = Path(db_path)
         self.default_ttl = default_ttl
         self._local = threading.local()
+
+        # Ensure directory exists
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize database schema
         self._init_db()
@@ -501,9 +504,7 @@ class CacheManager:
         key = generate_cache_key("validation_result", reference_key)
 
         if isinstance(self.backend, SQLiteCache):
-            self.backend.set(
-                key, result, ttl=self.openalex_ttl, cache_type="openalex"
-            )
+            self.backend.set(key, result, ttl=self.openalex_ttl, cache_type="openalex")
         else:
             self.backend.set(key, result, ttl=self.openalex_ttl)
 

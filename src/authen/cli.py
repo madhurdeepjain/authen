@@ -145,7 +145,7 @@ def main():
     cache_stats_parser.add_argument(
         "--db-path",
         help="Path to cache database",
-        default=".authen_cache.db",
+        default=".db/cache.db",
     )
 
     cache_clear_parser = cache_subparsers.add_parser(
@@ -161,7 +161,7 @@ def main():
     cache_clear_parser.add_argument(
         "--db-path",
         help="Path to cache database",
-        default=".authen_cache.db",
+        default=".db/cache.db",
     )
 
     cache_cleanup_parser = cache_subparsers.add_parser(
@@ -171,7 +171,7 @@ def main():
     cache_cleanup_parser.add_argument(
         "--db-path",
         help="Path to cache database",
-        default=".authen_cache.db",
+        default=".db/cache.db",
     )
 
     args = parser.parse_args()
