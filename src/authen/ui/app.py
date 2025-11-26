@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 import authen  # noqa: F401 - triggers .env loading
 from authen.core.config import Config, LLMProvider
@@ -365,6 +366,180 @@ def run():
         render_results_view(st.session_state.results, metrics_container, filter_container, table_container, details_container, include_raw)
 
 
+def render_visualizations(results):
+    """Render visualizations for the results."""
+    if not results or not results.validation_results:
+        st.info("No results available for visualization.")
+        return
+
+    # Extract data
+    countries = []
+    years = []
+    paper_citations = []
+    publications = []
+    statuses = []
+
+    for res in results.validation_results:
+        statuses.append(res.status.value)
+        
+        if not res.validated:
+            continue
+        
+        # Country
+        for author in res.validated.authors:
+            for aff in author.affiliations:
+                if aff.country:
+                    countries.append(aff.country)
+        
+        # Year
+        if res.validated.year:
+            years.append(res.validated.year)
+        
+        # Publication
+        if res.validated.publication:
+            publications.append(res.validated.publication)
+
+        # Citations with metadata
+        if res.validated.cited_by_count is not None:
+            paper_citations.append({
+                "Title": res.validated.title,
+                "Citations": res.validated.cited_by_count,
+                "Year": int(res.validated.year) if res.validated.year and res.validated.year.isdigit() else None,
+                "Publication": res.validated.publication
+            })
+
+    # Row 1: Validation Status & Top Journals
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("✅ Validation Status")
+        if statuses:
+            status_counts = pd.Series(statuses).value_counts().reset_index()
+            status_counts.columns = ["Status", "Count"]
+            
+            chart = (
+                alt.Chart(status_counts)
+                .mark_arc(innerRadius=50)
+                .encode(
+                    theta=alt.Theta("Count", stack=True),
+                    color=alt.Color("Status", scale=alt.Scale(scheme="category10")),
+                    tooltip=["Status", "Count"]
+                )
+                .interactive()
+            )
+            st.altair_chart(chart, width="stretch")
+        else:
+            st.info("No status data available.")
+
+    with col2:
+        st.subheader("📚 Top Journals/Conferences")
+        if publications:
+            pub_counts = pd.Series(publications).value_counts().reset_index()
+            pub_counts.columns = ["Publication", "Count"]
+            top_pubs = pub_counts.head(10)
+            
+            chart = (
+                alt.Chart(top_pubs)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Count"),
+                    y=alt.Y("Publication", sort="-x"),
+                    tooltip=["Publication", "Count"]
+                )
+                .interactive()
+            )
+            st.altair_chart(chart, width="stretch")
+        else:
+            st.info("No publication data available.")
+
+    st.divider()
+
+    # Row 2: Authors by Country & Publication Years
+    col3, col4 = st.columns(2)
+
+    with col3:
+        st.subheader("🌍 Authors by Country")
+        if countries:
+            country_counts = pd.Series(countries).value_counts().reset_index()
+            country_counts.columns = ["Country", "Count"]
+            
+            chart = (
+                alt.Chart(country_counts)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Country", sort="-y"),
+                    y="Count",
+                    tooltip=["Country", "Count"],
+                    color=alt.Color("Country", legend=None)
+                )
+                .interactive()
+            )
+            st.altair_chart(chart, width="stretch")
+        else:
+            st.info("No country data available.")
+
+    with col4:
+        st.subheader("📅 Publication Years")
+        if years:
+            year_counts = pd.Series(years).value_counts().reset_index()
+            year_counts.columns = ["Year", "Count"]
+            # Sort by year
+            year_counts = year_counts.sort_values("Year")
+            
+            chart = (
+                alt.Chart(year_counts)
+                .mark_bar()
+                .encode(
+                    x="Year",
+                    y="Count",
+                    tooltip=["Year", "Count"]
+                )
+                .interactive()
+            )
+            st.altair_chart(chart, width="stretch")
+        else:
+            st.info("No publication year data available.")
+
+    st.divider()
+
+    # Row 3: Citation Counts
+    st.subheader("📈 Citation Counts")
+    if paper_citations:
+        citation_df = pd.DataFrame(paper_citations)
+        
+        col_chart, col_top = st.columns([2, 1])
+        
+        with col_chart:
+            chart = (
+                alt.Chart(citation_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Citations", bin=alt.Bin(maxbins=50)),
+                    y="count()",
+                    tooltip=["count()", alt.Tooltip("Citations", bin=True)]
+                )
+                .interactive()
+            )
+            st.altair_chart(chart, width="stretch")
+            
+        with col_top:
+            st.markdown("**Top Cited Papers**")
+            top_papers = citation_df.sort_values("Citations", ascending=False).head(5)
+            st.dataframe(
+                top_papers[["Title", "Citations", "Year"]],
+                hide_index=True,
+                column_config={
+                    "Title": st.column_config.TextColumn("Title", width="medium"),
+                    "Citations": st.column_config.NumberColumn("Citations", format="%d"),
+                    "Year": st.column_config.TextColumn("Year", width="small"),
+                }
+            )
+            
+        
+    else:
+        st.info("No citation data available.")
+
+
 def render_results_view(results, metrics_container, filter_container, table_container, details_container, include_raw):
     """Render the full results view into the provided containers."""
     
@@ -397,29 +572,35 @@ def render_results_view(results, metrics_container, filter_container, table_cont
             key="status_filter_active"
         )
 
-    # Table
+    # Table & Visualizations
     with table_container.container():
-        filtered_results = [
-            r for r in results.validation_results if r.status.value in status_filter
-        ]
+        tab1, tab2 = st.tabs(["📋 Results Table", "📈 Visualizations"])
+        
+        with tab1:
+            filtered_results = [
+                r for r in results.validation_results if r.status.value in status_filter
+            ]
 
-        if filtered_results:
-            df = build_results_dataframe(filtered_results)
-            st.dataframe(
-                df,
-                width="stretch",
-                height=500,
-                column_config={
-                    "title": st.column_config.TextColumn("Title", width="large"),
-                    "authors": st.column_config.TextColumn("Authors", width="medium"),
-                    "confidence": st.column_config.ProgressColumn(
-                        "Confidence", min_value=0, max_value=1
-                    ),
-                    "openalex_url": st.column_config.LinkColumn("OpenAlex"),
-                },
-            )
-        else:
-            st.info("No results match the selected filters")
+            if filtered_results:
+                df = build_results_dataframe(filtered_results)
+                st.dataframe(
+                    df,
+                    width="stretch",
+                    height=500,
+                    column_config={
+                        "title": st.column_config.TextColumn("Title", width="large"),
+                        "authors": st.column_config.TextColumn("Authors", width="medium"),
+                        "confidence": st.column_config.ProgressColumn(
+                            "Confidence", min_value=0, max_value=1
+                        ),
+                        "openalex_url": st.column_config.LinkColumn("OpenAlex"),
+                    },
+                )
+            else:
+                st.info("No results match the selected filters")
+        
+        with tab2:
+            render_visualizations(results)
 
     # Details & Export
     with details_container.container():
