@@ -82,6 +82,8 @@ output/
 references.json
 *.pdf
 
+.ruff_cache/
+
 # Cache database
 .authen_cache.db
 *.cache.db
