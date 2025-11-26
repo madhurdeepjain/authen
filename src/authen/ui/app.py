@@ -671,7 +671,18 @@ async def process_with_progress(
                         show_reference_details(res)
             
             elif event.type == PipelineEventType.COMPLETED:
-                return event.data
+                result = event.data
+                # Sort validation results by original reference order
+                if result.parse_result and result.parse_result.references:
+                    # Create map of ref ID to index
+                    ref_index_map = {
+                        id(ref): i for i, ref in enumerate(result.parse_result.references)
+                    }
+                    # Sort
+                    result.validation_results.sort(
+                        key=lambda x: ref_index_map.get(id(x.original), float("inf"))
+                    )
+                return result
             
             elif event.type == PipelineEventType.ERROR:
                 msg = f"Error: {event.message}"
