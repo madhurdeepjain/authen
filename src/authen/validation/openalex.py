@@ -336,6 +336,16 @@ class OpenAlexClient:
         Returns:
             List of matching works
         """
+        # Generate cache key
+        author_key = " ".join(author_name.lower().split())[:100]
+
+        # Check cache first
+        if self.cache:
+            cached = self.cache.get_openalex_result(author_key, "author_search")
+            if cached:
+                logger.debug("openalex_cache_hit_author", author=author_name[:50])
+                return cached.get("results", [])
+
         params = {
             "filter": f"authorships.author.display_name.search:{quote(author_name)}",
             "per-page": str(per_page),
@@ -345,7 +355,13 @@ class OpenAlexClient:
         try:
             response = await self._request("works", params)
             if response and "results" in response:
-                return response["results"]
+                results = response["results"]
+                # Cache the results
+                if self.cache:
+                    self.cache.set_openalex_result(
+                        author_key, "author_search", {"results": results}
+                    )
+                return results
         except Exception as e:
             logger.warning("author_search_failed", author=author_name, error=str(e))
 
@@ -366,6 +382,16 @@ class OpenAlexClient:
         Returns:
             List of matching works
         """
+        # Generate cache key
+        query_key = " ".join(query.lower().split())[:100]
+
+        # Check cache first
+        if self.cache:
+            cached = self.cache.get_openalex_result(query_key, "full_search")
+            if cached:
+                logger.debug("openalex_cache_hit_search", query=query[:50])
+                return cached.get("results", [])
+
         params = {
             "search": query,
             "per-page": str(per_page),
@@ -375,7 +401,13 @@ class OpenAlexClient:
         try:
             response = await self._request("works", params)
             if response and "results" in response:
-                return response["results"]
+                results = response["results"]
+                # Cache the results
+                if self.cache:
+                    self.cache.set_openalex_result(
+                        query_key, "full_search", {"results": results}
+                    )
+                return results
         except Exception as e:
             logger.warning("search_failed", query=query, error=str(e))
 
@@ -472,7 +504,34 @@ class OpenAlexValidator:
             """Validate a single non-DOI reference."""
             async with semaphore:
                 try:
+                    # Check cache first
+                    if self.client.cache:
+                        cache_key = self.client.cache.generate_reference_key(
+                            ref.title, ref.authors, ref.year
+                        )
+                        cached_result = self.client.cache.get_validation_result(cache_key)
+                        if cached_result:
+                            # Reconstruct ValidationResult from dict
+                            # Note: We need to ensure 'original' is the current ref object
+                            # but other fields come from cache
+                            cached_obj = ValidationResult(**cached_result)
+                            # Update original to match current instance (though data should be same)
+                            cached_obj.original = ref
+                            await output_queue.put(cached_obj)
+                            return
+
                     result = await self._validate_by_search(ref)
+                    
+                    # Cache the result
+                    if self.client.cache:
+                        cache_key = self.client.cache.generate_reference_key(
+                            ref.title, ref.authors, ref.year
+                        )
+                        # Convert to dict for caching
+                        # We use json-compatible dict
+                        result_dict = result.model_dump()
+                        self.client.cache.set_validation_result(cache_key, result_dict)
+                        
                     await output_queue.put(result)
                 except Exception as e:
                     logger.error("streaming_validation_error", error=str(e))
@@ -629,7 +688,28 @@ class OpenAlexValidator:
 
         # Validate non-DOI references
         for i, ref in without_doi:
+            # Check cache first
+            if self.client.cache:
+                cache_key = self.client.cache.generate_reference_key(
+                    ref.title, ref.authors, ref.year
+                )
+                cached_result = self.client.cache.get_validation_result(cache_key)
+                if cached_result:
+                    cached_obj = ValidationResult(**cached_result)
+                    cached_obj.original = ref
+                    results[i] = cached_obj
+                    continue
+
             result = await self._validate_by_search(ref)
+            
+            # Cache the result
+            if self.client.cache:
+                cache_key = self.client.cache.generate_reference_key(
+                    ref.title, ref.authors, ref.year
+                )
+                result_dict = result.model_dump()
+                self.client.cache.set_validation_result(cache_key, result_dict)
+                
             results[i] = result
 
         # Ensure all results are filled
