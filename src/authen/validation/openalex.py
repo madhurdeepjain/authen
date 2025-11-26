@@ -321,13 +321,43 @@ class OpenAlexClient:
 
         return []
 
+    async def search_authors(
+        self,
+        query: str,
+    ) -> list[dict]:
+        """
+        Search for authors by name.
+
+        Args:
+            query: Author name to search for
+
+        Returns:
+            List of author objects
+        """
+        try:
+            response = await self._request(
+                "authors",
+                {
+                    "search": query,
+                    "per-page": "10",
+                },
+            )
+            if response and "results" in response:
+                return response["results"]
+        except Exception as e:
+            logger.warning("author_search_endpoint_failed", query=query, error=str(e))
+
+        return []
+
     async def search_works_by_author(
         self,
         author_name: str,
         per_page: int = 25,
     ) -> list[dict]:
         """
-        Search for works by author name.
+        Search for works by author name using 2-step process.
+        1. Search for author to get ID
+        2. Filter works by author ID
 
         Args:
             author_name: Author name to search for
@@ -346,13 +376,27 @@ class OpenAlexClient:
                 logger.debug("openalex_cache_hit_author", author=author_name[:50])
                 return cached.get("results", [])
 
-        params = {
-            "filter": f"authorships.author.display_name.search:{quote(author_name)}",
-            "per-page": str(per_page),
-            "select": ",".join(WORKS_SELECT_FIELDS),
-        }
-
         try:
+            # Step 1: Find author ID
+            authors = await self.search_authors(author_name)
+            if not authors:
+                return []
+
+            # Take top 3 authors to cover potential name collisions
+            author_ids = [a["id"] for a in authors[:3] if "id" in a]
+
+            if not author_ids:
+                return []
+
+            # Step 2: Filter works by these author IDs
+            author_id_filter = "|".join(author_ids)
+
+            params = {
+                "filter": f"author.id:{author_id_filter}",
+                "per-page": str(per_page),
+                "select": ",".join(WORKS_SELECT_FIELDS),
+            }
+
             response = await self._request("works", params)
             if response and "results" in response:
                 results = response["results"]
@@ -362,8 +406,52 @@ class OpenAlexClient:
                         author_key, "author_search", {"results": results}
                     )
                 return results
+
         except Exception as e:
             logger.warning("author_search_failed", author=author_name, error=str(e))
+
+        return []
+
+    async def autocomplete_works(
+        self,
+        query: str,
+    ) -> list[dict]:
+        """
+        Autocomplete works by title.
+
+        Args:
+            query: Title query string
+
+        Returns:
+            List of autocomplete results (lightweight objects)
+        """
+        # Generate cache key
+        query_key = " ".join(query.lower().split())[:100]
+
+        # Check cache first
+        if self.cache:
+            cached = self.cache.get_openalex_result(query_key, "autocomplete")
+            if cached:
+                logger.debug("openalex_cache_hit_autocomplete", query=query[:50])
+                return cached.get("results", [])
+
+        try:
+            # Using the autocomplete endpoint
+            response = await self._request(
+                "autocomplete/works",
+                {"q": query},
+            )
+
+            if response and "results" in response:
+                results = response["results"]
+                # Cache the results
+                if self.cache:
+                    self.cache.set_openalex_result(
+                        query_key, "autocomplete", {"results": results}
+                    )
+                return results
+        except Exception as e:
+            logger.warning("autocomplete_failed", query=query, error=str(e))
 
         return []
 
@@ -509,7 +597,9 @@ class OpenAlexValidator:
                         cache_key = self.client.cache.generate_reference_key(
                             ref.title, ref.authors, ref.year
                         )
-                        cached_result = self.client.cache.get_validation_result(cache_key)
+                        cached_result = self.client.cache.get_validation_result(
+                            cache_key
+                        )
                         if cached_result:
                             # Reconstruct ValidationResult from dict
                             # Note: We need to ensure 'original' is the current ref object
@@ -521,7 +611,7 @@ class OpenAlexValidator:
                             return
 
                     result = await self._validate_by_search(ref)
-                    
+
                     # Cache the result
                     if self.client.cache:
                         cache_key = self.client.cache.generate_reference_key(
@@ -531,7 +621,7 @@ class OpenAlexValidator:
                         # We use json-compatible dict
                         result_dict = result.model_dump()
                         self.client.cache.set_validation_result(cache_key, result_dict)
-                        
+
                     await output_queue.put(result)
                 except Exception as e:
                     logger.error("streaming_validation_error", error=str(e))
@@ -701,7 +791,7 @@ class OpenAlexValidator:
                     continue
 
             result = await self._validate_by_search(ref)
-            
+
             # Cache the result
             if self.client.cache:
                 cache_key = self.client.cache.generate_reference_key(
@@ -709,7 +799,7 @@ class OpenAlexValidator:
                 )
                 result_dict = result.model_dump()
                 self.client.cache.set_validation_result(cache_key, result_dict)
-                
+
             results[i] = result
 
         # Ensure all results are filled
@@ -819,40 +909,140 @@ class OpenAlexValidator:
                 error_message="No title available",
             )
 
-        try:
-            search_title = ref.get_search_title()
-            works = await self.client.search_works_by_title(search_title)
+        search_title = ref.get_search_title()
+        author_name = ""
+        if ref.authors:
+            author_name = ref.authors[0].last_name or ref.authors[0].display_name
 
-            if not works:
-                # Try broader full-text search
-                works = await self.client.search_works(search_title)
+        # Define search strategies
+        # Each strategy is a coroutine that returns list[dict] (works)
+        strategies = []
 
-            if not works:
-                return ValidationResult(
-                    original=ref,
-                    status=ValidationStatus.NOT_FOUND,
-                    match_method="title_search",
+        # Strategy 0: Autocomplete (Fastest)
+        # Autocomplete returns lightweight objects, so we need to fetch the full work
+        # if we find a hit.
+        # We'll handle this slightly differently in the loop.
+        strategies.append(
+            ("autocomplete", lambda: self.client.autocomplete_works(search_title))
+        )
+
+        # Strategy 1: Strict title search
+        strategies.append(
+            ("title_strict", lambda: self.client.search_works_by_title(search_title))
+        )
+
+        # Strategy 2: Full text search with title
+        strategies.append(("full_text", lambda: self.client.search_works(search_title)))
+
+        # Strategy 3: Title + Author (if author exists)
+        if author_name:
+            strategies.append(
+                (
+                    "title_author",
+                    lambda: self.client.search_works(f"{search_title} {author_name}"),
+                )
+            )
+
+        # Strategy 4: Segments (split by punctuation)
+        # We construct this strategy list dynamically
+        import re
+
+        segments = re.split(r"[.:\-]", search_title)
+        long_segments = [s.strip() for s in segments if len(s.strip()) > 15]
+        long_segments.sort(key=len, reverse=True)
+
+        for segment in long_segments:
+            if segment == search_title:
+                continue
+            strategies.append(
+                (
+                    f"segment_{segment[:15]}...",
+                    lambda s=segment: self.client.search_works_by_title(s),
+                )
+            )
+            # Also try full text for segments
+            strategies.append(
+                (
+                    f"segment_text_{segment[:15]}...",
+                    lambda s=segment: self.client.search_works(s),
+                )
+            )
+
+        last_error = None
+
+        for strategy_name, search_func in strategies:
+            try:
+                logger.debug("trying_search_strategy", strategy=strategy_name)
+                results = await search_func()
+
+                if not results:
+                    continue
+
+                # Special handling for autocomplete results which are partial objects
+                if strategy_name == "autocomplete":
+                    # Convert autocomplete results to full work objects
+                    # We only take top 3 candidates to avoid too many lookups
+                    ids_to_fetch = []
+                    for r in results[:3]:
+                        if "id" in r:
+                            ids_to_fetch.append(r["id"])
+
+                    if ids_to_fetch:
+                        # Just use a quick fetch for these IDs
+                        # Strip the https://openalex.org/ prefix if present
+                        clean_ids = [
+                            id.replace("https://openalex.org/", "")
+                            for id in ids_to_fetch
+                        ]
+
+                        works = []
+                        id_filter = "|".join(clean_ids)
+                        try:
+                            # Re-use _request directly for efficiency
+                            resp = await self.client._request(
+                                "works",
+                                {
+                                    "filter": f"openalex_id:{id_filter}",
+                                    "per-page": str(len(ids_to_fetch)),
+                                    "select": ",".join(WORKS_SELECT_FIELDS),
+                                },
+                            )
+                            if resp and "results" in resp:
+                                works = resp["results"]
+                        except Exception as e:
+                            logger.warning("autocomplete_fetch_failed", error=str(e))
+                    else:
+                        works = []
+                else:
+                    works = results
+
+                if not works:
+                    continue
+
+                # Check if we have a valid match among these works
+                best_match = self._find_best_candidate(
+                    ref, works, primary_weight="author"
                 )
 
-            # Find best match: primarily by author, with secondary factors
-            best_match = self._find_best_candidate(ref, works, primary_weight="author")
+                if best_match:
+                    # Mark the method used
+                    best_match.match_method = f"title_search_{strategy_name}"
+                    return best_match
 
-            if best_match:
-                return best_match
+            except Exception as e:
+                logger.warning(
+                    "search_strategy_failed", strategy=strategy_name, error=str(e)
+                )
+                last_error = e
 
-            return ValidationResult(
-                original=ref,
-                status=ValidationStatus.NOT_FOUND,
-                match_method="title_search",
-            )
-
-        except Exception as e:
-            logger.error("title_search_error", title=ref.title, error=str(e))
-            return ValidationResult(
-                original=ref,
-                status=ValidationStatus.ERROR,
-                error_message=str(e),
-            )
+        return ValidationResult(
+            original=ref,
+            status=ValidationStatus.NOT_FOUND,
+            match_method="title_search",
+            error_message=str(last_error)
+            if last_error
+            else "No matches found by title search strategies",
+        )
 
     async def _search_by_author(self, ref: ReferenceData) -> ValidationResult:
         """Search by author, rank candidates by title similarity."""
@@ -960,15 +1150,21 @@ class OpenAlexValidator:
 
         # Sort by score descending
         candidates.sort(key=lambda x: x["score"], reverse=True)
-        best = candidates[0]
 
-        # Check if best candidate meets thresholds
-        if best["title_sim"] >= self.title_threshold:
-            result = self._create_validation_result(ref, best["work"], "title_search")
-            result.title_similarity = best["title_sim"]
-            result.author_similarity = best["author_sim"]
-            result.confidence = best["score"]
-            return result
+        # Iterate through candidates to find the first valid one
+        # This handles cases where the top scoring candidate (by combined score)
+        # fails the hard threshold check (e.g. good author match but bad title match),
+        # but a subsequent candidate passes.
+        for cand in candidates[:5]:  # Check top 5
+            # Check if candidate meets thresholds
+            if cand["title_sim"] >= self.title_threshold:
+                result = self._create_validation_result(
+                    ref, cand["work"], "title_search"
+                )
+                result.title_similarity = cand["title_sim"]
+                result.author_similarity = cand["author_sim"]
+                result.confidence = cand["score"]
+                return result
 
         return None
 
@@ -1106,8 +1302,21 @@ class OpenAlexValidator:
         t1 = title1.lower().strip()
         t2 = title2.lower().strip()
 
-        # Use token set ratio for robustness to word order
-        return fuzz.token_set_ratio(t1, t2) / 100.0
+        # Use multiple metrics to find the best match
+        # token_set_ratio: handles subset/reordering
+        # partial_ratio: handles substrings well (e.g. short vs long title)
+        # token_sort_ratio: handles reordering
+        scores = [
+            fuzz.token_set_ratio(t1, t2),
+            fuzz.token_sort_ratio(t1, t2),
+        ]
+
+        # Only use partial ratio if titles are reasonably long to avoid false positives
+        # e.g. "AI" vs "AI in Medicine"
+        if len(t1) >= 5 and len(t2) >= 5:
+            scores.append(fuzz.partial_ratio(t1, t2))
+
+        return max(scores) / 100.0
 
     def _calculate_author_similarity(
         self,
@@ -1140,11 +1349,23 @@ class OpenAlexValidator:
         # Calculate best match for each author
         matches = 0
         for name1 in names1:
-            best_match = max(fuzz.token_set_ratio(name1, name2) for name2 in names2)
-            if best_match >= 70:  # 70% similarity threshold
+            # Handle "et al" or similar in input if it leaked through
+            if name1 in ["et al", "et al.", "others"]:
+                continue
+
+            best_match = 0
+            if names2:
+                best_match = max(fuzz.token_set_ratio(name1, name2) for name2 in names2)
+
+            if best_match >= 75:  # Slightly increased threshold for better precision
                 matches += 1
 
-        return matches / max(len(names1), len(names2))
+        # Use input coverage (Recall) as the primary metric
+        # This handles cases where input has fewer authors than the work (e.g. "et al")
+        if not names1:
+            return 0.0
+
+        return matches / len(names1)
 
 
 async def validate_references(
