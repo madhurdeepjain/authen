@@ -585,8 +585,8 @@ class OpenAlexValidator:
         # DOI batching state
         doi_batch: list[ReferenceData] = []
         doi_batch_lock = asyncio.Lock()
-        DOI_BATCH_SIZE = 25  # Batch DOIs for efficiency (max 50)
-        DOI_BATCH_TIMEOUT = 0.5  # Flush batch after this many seconds
+        doi_batch_size = 25  # Batch DOIs for efficiency (max 50)
+        doi_batch_timeout = 0.5  # Flush batch after this many seconds
 
         async def validate_single(ref: ReferenceData) -> None:
             """Validate a single non-DOI reference."""
@@ -602,10 +602,11 @@ class OpenAlexValidator:
                         )
                         if cached_result:
                             # Reconstruct ValidationResult from dict
-                            # Note: We need to ensure 'original' is the current ref object
-                            # but other fields come from cache
+                            # Note: We need to ensure 'original' is the current ref
+                            # object but other fields come from cache
                             cached_obj = ValidationResult(**cached_result)
-                            # Update original to match current instance (though data should be same)
+                            # Update original to match current instance
+                            # (though data should be same)
                             cached_obj.original = ref
                             await output_queue.put(cached_obj)
                             return
@@ -661,7 +662,7 @@ class OpenAlexValidator:
         async def batch_flush_timer() -> None:
             """Periodically flush DOI batch to avoid waiting too long."""
             while True:
-                await asyncio.sleep(DOI_BATCH_TIMEOUT)
+                await asyncio.sleep(doi_batch_timeout)
                 await flush_doi_batch()
 
         # Start batch flush timer
@@ -676,7 +677,7 @@ class OpenAlexValidator:
                         batch_to_process = None
                         async with doi_batch_lock:
                             doi_batch.append(ref)
-                            if len(doi_batch) >= DOI_BATCH_SIZE:
+                            if len(doi_batch) >= doi_batch_size:
                                 batch_to_process = doi_batch.copy()
                                 doi_batch.clear()
 
