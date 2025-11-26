@@ -1130,7 +1130,7 @@ class OpenAlexValidator:
         names2 = set()
         for authorship in authorships:
             author_info = authorship.get("author", {}) or {}
-            name = author_info.get("display_name", "").lower()
+            name = (author_info.get("display_name") or "").lower()
             if name:
                 names2.add(name)
 
