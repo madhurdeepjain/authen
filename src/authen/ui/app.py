@@ -180,6 +180,8 @@ def run():
     )
 
     text_preview_placeholder = None
+    preview_container = st.empty()
+
     if input_type == "PDF File":
         uploaded_file = st.file_uploader(
             "Upload PDF",
@@ -197,21 +199,20 @@ def run():
             # Only show preview buttons if no results yet
             if st.session_state.results is None:
                 # Use a container we can clear later
-                preview_container = st.empty()
-                
+
                 with preview_container.container():
                     preview_btn_placeholder = st.empty()
-                    
+
                     if st.session_state.preview_text:
-                         if preview_btn_placeholder.button("Refresh Preview"):
-                             preview_btn_placeholder.empty() # Clear button
-                             with st.spinner("Extracting text..."):
-                                 pdf_text = extract_pdf_preview(uploaded_file)
-                                 st.session_state.preview_text = pdf_text
-                             st.rerun()
+                        if preview_btn_placeholder.button("Refresh Preview"):
+                            preview_btn_placeholder.empty()  # Clear button
+                            with st.spinner("Extracting text..."):
+                                pdf_text = extract_pdf_preview(uploaded_file)
+                                st.session_state.preview_text = pdf_text
+                            st.rerun()
                     else:
                         if preview_btn_placeholder.button("Preview Text"):
-                            preview_btn_placeholder.empty() # Clear button
+                            preview_btn_placeholder.empty()  # Clear button
                             with st.spinner("Extracting text..."):
                                 pdf_text = extract_pdf_preview(uploaded_file)
                                 st.session_state.preview_text = pdf_text
@@ -228,8 +229,7 @@ def run():
 
     else:
         # Define preview_container for text input case too (empty) so we don't error
-        preview_container = st.empty()
-        
+
         text_input = st.text_area(
             "Paste References",
             height=300,
@@ -247,7 +247,7 @@ def run():
     progress_placeholder = st.empty()
     log_expander = st.expander("Activity Log", expanded=False)
     log_container = log_expander.container(height=300)
-    
+
     # Initialize logs in session state
     if "activity_logs" not in st.session_state:
         st.session_state.activity_logs = []
@@ -255,15 +255,15 @@ def run():
     # Render existing logs
     for log_msg in st.session_state.activity_logs:
         log_container.write(log_msg)
-    
+
     # Filter container - rendered before table
     filter_container = st.empty()
-    
+
     table_container = st.empty()
     details_container = st.empty()
 
     process_clicked = False
-    
+
     # Determine if process should be disabled
     disable_process = False
     if input_type == "PDF File" and not uploaded_file:
@@ -271,10 +271,17 @@ def run():
     elif input_type == "Text Input" and not text_input.strip():
         disable_process = True
 
-    if process_btn_placeholder.button("🚀 Process References", type="primary", disabled=disable_process, key="process_btn_main"):
+    if process_btn_placeholder.button(
+        "🚀 Process References",
+        type="primary",
+        disabled=disable_process,
+        key="process_btn_main",
+    ):
         process_clicked = True
         # Disable button while processing
-        process_btn_placeholder.button("Processing...", type="primary", disabled=True, key="process_btn_processing")
+        process_btn_placeholder.button(
+            "Processing...", type="primary", disabled=True, key="process_btn_processing"
+        )
         # Clear preview buttons if they exist
         preview_container.empty()
 
@@ -282,13 +289,19 @@ def run():
         # Validate inputs
         if input_type == "PDF File" and not uploaded_file:
             st.error("Please upload a PDF file")
-            process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_error_pdf") # Reset button
+            process_btn_placeholder.button(
+                "🚀 Process References", type="primary", key="process_btn_error_pdf"
+            )  # Reset button
         elif input_type == "Text Input" and not text_input.strip():
             st.error("Please enter some text")
-            process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_error_text") # Reset button
+            process_btn_placeholder.button(
+                "🚀 Process References", type="primary", key="process_btn_error_text"
+            )  # Reset button
         elif provider in ["openai", "anthropic"] and not api_key:
             st.error(f"Please enter your {provider.title()} API key")
-            process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_error_api") # Reset button
+            process_btn_placeholder.button(
+                "🚀 Process References", type="primary", key="process_btn_error_api"
+            )  # Reset button
         elif not openalex_email:
             st.warning(
                 "No email provided - OpenAlex will be limited to 1 req/sec. "
@@ -297,10 +310,12 @@ def run():
             # Simple continue for now as complex flow inside button click is tricky
             # Ideally we'd have a separate state for this check
             st.info("Please provide an email in the sidebar to continue efficiently.")
-            process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_warning_email") # Reset button
+            process_btn_placeholder.button(
+                "🚀 Process References", type="primary", key="process_btn_warning_email"
+            )  # Reset button
             st.stop()
         else:
-             # Build config
+            # Build config
             config = Config(
                 llm_provider=LLMProvider(provider),
                 llm_model=model,
@@ -316,7 +331,7 @@ def run():
                 # Progress bar
                 progress_bar = progress_placeholder.progress(0, text="Starting...")
                 set_progress_animation(True)
-                
+
                 # Render disabled filter to reserve space and match layout
                 with filter_container.container():
                     st.multiselect(
@@ -324,9 +339,9 @@ def run():
                         options=["validated", "partial_match", "not_found", "error"],
                         default=["validated", "partial_match", "not_found", "error"],
                         disabled=True,
-                        key="status_filter_disabled"
+                        key="status_filter_disabled",
                     )
-                
+
                 # Run pipeline
                 results = asyncio.run(
                     process_with_progress(
@@ -338,33 +353,54 @@ def run():
                         table_container,
                         details_container,
                         progress_bar,
-                        text_preview_placeholder
+                        text_preview_placeholder,
                     )
                 )
 
                 st.session_state.results = results
                 progress_bar.progress(1.0, text="Processing Complete!")
                 set_progress_animation(False)
-                
+
                 # Restore button
-                process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_restore")
-                
+                process_btn_placeholder.button(
+                    "🚀 Process References", type="primary", key="process_btn_restore"
+                )
+
                 # Render the FINAL view (enabled filter, downloads, details)
                 # This will seamlessly replace the live view components
-                render_results_view(results, metrics_container, filter_container, table_container, details_container, include_raw)
+                render_results_view(
+                    results,
+                    metrics_container,
+                    filter_container,
+                    table_container,
+                    details_container,
+                    include_raw,
+                )
 
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
-                import traceback # Added import
-                st.code(traceback.format_exc()) # Added traceback
-                process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_error_restore")
+                import traceback  # Added import
+
+                st.code(traceback.format_exc())  # Added traceback
+                process_btn_placeholder.button(
+                    "🚀 Process References",
+                    type="primary",
+                    key="process_btn_error_restore",
+                )
 
     # If we have results (either just finished or from session state), ensure they are displayed.
     # If we just finished, the `render_results_view` above handled it.
     # If we re-ran (e.g. filter change), we need to re-render them.
-    
+
     if st.session_state.results is not None and not process_clicked:
-        render_results_view(st.session_state.results, metrics_container, filter_container, table_container, details_container, include_raw)
+        render_results_view(
+            st.session_state.results,
+            metrics_container,
+            filter_container,
+            table_container,
+            details_container,
+            include_raw,
+        )
 
 
 def render_visualizations(results):
@@ -382,49 +418,53 @@ def render_visualizations(results):
 
     for res in results.validation_results:
         statuses.append(res.status.value)
-        
+
         if not res.validated:
             continue
-        
+
         # Country
         for author in res.validated.authors:
             for aff in author.affiliations:
                 if aff.country:
                     countries.append(aff.country)
-        
+
         # Year
         if res.validated.year:
             years.append(res.validated.year)
-        
+
         # Publication
         if res.validated.publication:
             publications.append(res.validated.publication)
 
         # Citations with metadata
         if res.validated.cited_by_count is not None:
-            paper_citations.append({
-                "Title": res.validated.title,
-                "Citations": res.validated.cited_by_count,
-                "Year": int(res.validated.year) if res.validated.year and res.validated.year.isdigit() else None,
-                "Publication": res.validated.publication
-            })
+            paper_citations.append(
+                {
+                    "Title": res.validated.title,
+                    "Citations": res.validated.cited_by_count,
+                    "Year": int(res.validated.year)
+                    if res.validated.year and res.validated.year.isdigit()
+                    else None,
+                    "Publication": res.validated.publication,
+                }
+            )
 
     # Row 1: Validation Status & Top Journals
     col1, col2 = st.columns(2)
-    
+
     with col1:
         st.subheader("✅ Validation Status")
         if statuses:
             status_counts = pd.Series(statuses).value_counts().reset_index()
             status_counts.columns = ["Status", "Count"]
-            
+
             chart = (
                 alt.Chart(status_counts)
                 .mark_arc(innerRadius=50)
                 .encode(
                     theta=alt.Theta("Count", stack=True),
                     color=alt.Color("Status", scale=alt.Scale(scheme="category10")),
-                    tooltip=["Status", "Count"]
+                    tooltip=["Status", "Count"],
                 )
                 .interactive()
             )
@@ -438,14 +478,14 @@ def render_visualizations(results):
             pub_counts = pd.Series(publications).value_counts().reset_index()
             pub_counts.columns = ["Publication", "Count"]
             top_pubs = pub_counts.head(10)
-            
+
             chart = (
                 alt.Chart(top_pubs)
                 .mark_bar()
                 .encode(
                     x=alt.X("Count"),
                     y=alt.Y("Publication", sort="-x"),
-                    tooltip=["Publication", "Count"]
+                    tooltip=["Publication", "Count"],
                 )
                 .interactive()
             )
@@ -463,7 +503,7 @@ def render_visualizations(results):
         if countries:
             country_counts = pd.Series(countries).value_counts().reset_index()
             country_counts.columns = ["Country", "Count"]
-            
+
             chart = (
                 alt.Chart(country_counts)
                 .mark_bar()
@@ -471,7 +511,7 @@ def render_visualizations(results):
                     x=alt.X("Country", sort="-y"),
                     y="Count",
                     tooltip=["Country", "Count"],
-                    color=alt.Color("Country", legend=None)
+                    color=alt.Color("Country", legend=None),
                 )
                 .interactive()
             )
@@ -486,15 +526,11 @@ def render_visualizations(results):
             year_counts.columns = ["Year", "Count"]
             # Sort by year
             year_counts = year_counts.sort_values("Year")
-            
+
             chart = (
                 alt.Chart(year_counts)
                 .mark_bar()
-                .encode(
-                    x="Year",
-                    y="Count",
-                    tooltip=["Year", "Count"]
-                )
+                .encode(x="Year", y="Count", tooltip=["Year", "Count"])
                 .interactive()
             )
             st.altair_chart(chart, width="stretch")
@@ -507,9 +543,9 @@ def render_visualizations(results):
     st.subheader("📈 Citation Counts")
     if paper_citations:
         citation_df = pd.DataFrame(paper_citations)
-        
+
         col_chart, col_top = st.columns([2, 1])
-        
+
         with col_chart:
             chart = (
                 alt.Chart(citation_df)
@@ -517,12 +553,12 @@ def render_visualizations(results):
                 .encode(
                     x=alt.X("Citations", bin=alt.Bin(maxbins=50)),
                     y="count()",
-                    tooltip=["count()", alt.Tooltip("Citations", bin=True)]
+                    tooltip=["count()", alt.Tooltip("Citations", bin=True)],
                 )
                 .interactive()
             )
             st.altair_chart(chart, width="stretch")
-            
+
         with col_top:
             st.markdown("**Top Cited Papers**")
             top_papers = citation_df.sort_values("Citations", ascending=False).head(5)
@@ -531,19 +567,27 @@ def render_visualizations(results):
                 hide_index=True,
                 column_config={
                     "Title": st.column_config.TextColumn("Title", width="medium"),
-                    "Citations": st.column_config.NumberColumn("Citations", format="%d"),
+                    "Citations": st.column_config.NumberColumn(
+                        "Citations", format="%d"
+                    ),
                     "Year": st.column_config.TextColumn("Year", width="small"),
-                }
+                },
             )
-            
-        
+
     else:
         st.info("No citation data available.")
 
 
-def render_results_view(results, metrics_container, filter_container, table_container, details_container, include_raw):
+def render_results_view(
+    results,
+    metrics_container,
+    filter_container,
+    table_container,
+    details_container,
+    include_raw,
+):
     """Render the full results view into the provided containers."""
-    
+
     # Metrics
     with metrics_container.container():
         # Use 6 columns to include PDF Progress (100% at end)
@@ -570,13 +614,13 @@ def render_results_view(results, metrics_container, filter_container, table_cont
             "Filter by Status",
             options=["validated", "partial_match", "not_found", "error"],
             default=["validated", "partial_match", "not_found", "error"],
-            key="status_filter_active"
+            key="status_filter_active",
         )
 
     # Table & Visualizations
     with table_container.container():
         tab1, tab2 = st.tabs(["📋 Results Table", "📈 Visualizations"])
-        
+
         with tab1:
             filtered_results = [
                 r for r in results.validation_results if r.status.value in status_filter
@@ -590,7 +634,9 @@ def render_results_view(results, metrics_container, filter_container, table_cont
                     height=500,
                     column_config={
                         "title": st.column_config.TextColumn("Title", width="large"),
-                        "authors": st.column_config.TextColumn("Authors", width="medium"),
+                        "authors": st.column_config.TextColumn(
+                            "Authors", width="medium"
+                        ),
                         "confidence": st.column_config.ProgressColumn(
                             "Confidence", min_value=0, max_value=1
                         ),
@@ -599,7 +645,7 @@ def render_results_view(results, metrics_container, filter_container, table_cont
                 )
             else:
                 st.info("No results match the selected filters")
-        
+
         with tab2:
             render_visualizations(results)
 
@@ -638,22 +684,22 @@ def render_results_view(results, metrics_container, filter_container, table_cont
                 key="btn_csv_download",
                 use_container_width=True,
             )
-        
+
         st.divider()
         st.header("Detailed View")
-        
+
         # Re-filter for details
         filtered_results_details = [
             r for r in results.validation_results if r.status.value in status_filter
         ]
-        
+
         if filtered_results_details:
             selected_idx = st.number_input(
                 "Reference #",
                 min_value=1,
                 max_value=len(filtered_results_details),
                 value=1,
-                key="details_idx_input"
+                key="details_idx_input",
             )
             if selected_idx:
                 show_reference_details(filtered_results_details[selected_idx - 1])
@@ -687,7 +733,7 @@ async def process_with_progress(
     table_container,
     details_container,
     progress_bar,
-    text_preview_placeholder=None
+    text_preview_placeholder=None,
 ):
     """Process with live progress updates."""
     from authen.core.schemas import PipelineEventType
@@ -697,7 +743,7 @@ async def process_with_progress(
     import pandas as pd
 
     pipeline = Pipeline(config)
-    
+
     tmp_path = None
     if input_type == "PDF File":
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
@@ -719,20 +765,20 @@ async def process_with_progress(
         not_found_count = 0
         error_count = 0
         pdf_progress = 0
-        
+
         results_buffer = []
-        
+
         # Prepare placeholders
         # Since containers are now st.empty(), we can use them directly with .container()
         # to replace content. We don't need to create new placeholders inside them.
         metrics_placeholder = metrics_container
         table_placeholder = table_container
         details_placeholder = details_container
-        
+
         # Clear previous logs
         st.session_state.activity_logs = []
         log_container.empty()
-        
+
         # Initial Metrics
         with metrics_placeholder.container():
             col0, col1, col2, col3, col4, col5 = st.columns(6)
@@ -754,8 +800,10 @@ async def process_with_progress(
                 msg = "✅ Extraction complete"
                 log_container.write(msg)
                 st.session_state.activity_logs.append(msg)
-                progress_bar.progress(0.05, text="Extraction complete. Analyzing document...")
-                
+                progress_bar.progress(
+                    0.05, text="Extraction complete. Analyzing document..."
+                )
+
                 # Update preview text if available and placeholder exists
                 if text_preview_placeholder and event.data.text:
                     st.session_state.preview_text = event.data.text
@@ -765,7 +813,7 @@ async def process_with_progress(
                         height=300,
                         key="extracted_text_preview",
                     )
-            
+
             elif event.type == PipelineEventType.CHUNK_PROCESSED:
                 current = event.data["current"]
                 total = event.data["total"]
@@ -775,7 +823,7 @@ async def process_with_progress(
                     # Map to 5-40% range
                     prog = 0.05 + (current / total) * 0.35
                     progress_bar.progress(prog, text=f"Analyzing document... {pct}%")
-                    
+
                     # Update metrics with new PDF progress
                     with metrics_placeholder.container():
                         col0, col1, col2, col3, col4, col5 = st.columns(6)
@@ -800,7 +848,7 @@ async def process_with_progress(
                     col3.metric("Partial Match", partial_count)
                     col4.metric("Not Found", not_found_count)
                     col5.metric("Errors", error_count)
-                
+
             elif event.type == PipelineEventType.VALIDATION_COMPLETE:
                 res = event.data
                 if res.status.value == "validated":
@@ -816,11 +864,16 @@ async def process_with_progress(
                 log_container.write(msg)
                 st.session_state.activity_logs.append(msg)
                 results_buffer.append(res)
-                
+
                 if found_count > 0:
-                    ratio = (validated_count + partial_count + not_found_count + error_count) / found_count
+                    ratio = (
+                        validated_count + partial_count + not_found_count + error_count
+                    ) / found_count
                     prog = 0.40 + (ratio * 0.60)
-                    progress_bar.progress(min(prog, 0.99), text=f"Validated {len(results_buffer)}/{found_count} references")
+                    progress_bar.progress(
+                        min(prog, 0.99),
+                        text=f"Validated {len(results_buffer)}/{found_count} references",
+                    )
 
                 # Update metrics
                 with metrics_placeholder.container():
@@ -839,34 +892,43 @@ async def process_with_progress(
                         width="stretch",
                         height=500,
                         column_config={
-                            "title": st.column_config.TextColumn("Title", width="large"),
-                            "authors": st.column_config.TextColumn("Authors", width="medium"),
-                            "confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=1),
+                            "title": st.column_config.TextColumn(
+                                "Title", width="large"
+                            ),
+                            "authors": st.column_config.TextColumn(
+                                "Authors", width="medium"
+                            ),
+                            "confidence": st.column_config.ProgressColumn(
+                                "Confidence", min_value=0, max_value=1
+                            ),
                             "openalex_url": st.column_config.LinkColumn("OpenAlex"),
                         },
                     )
-                    
+
                     # Update details view with the latest item
                     with details_placeholder.container():
                         st.divider()
                         st.header("Detailed View")
-                        st.caption(f"Showing details for most recent result ({len(results_buffer)}):")
+                        st.caption(
+                            f"Showing details for most recent result ({len(results_buffer)}):"
+                        )
                         show_reference_details(res)
-            
+
             elif event.type == PipelineEventType.COMPLETED:
                 result = event.data
                 # Sort validation results by original reference order
                 if result.parse_result and result.parse_result.references:
                     # Create map of ref ID to index
                     ref_index_map = {
-                        id(ref): i for i, ref in enumerate(result.parse_result.references)
+                        id(ref): i
+                        for i, ref in enumerate(result.parse_result.references)
                     }
                     # Sort
                     result.validation_results.sort(
                         key=lambda x: ref_index_map.get(id(x.original), float("inf"))
                     )
                 return result
-            
+
             elif event.type == PipelineEventType.ERROR:
                 msg = f"Error: {event.message}"
                 log_container.error(msg)
