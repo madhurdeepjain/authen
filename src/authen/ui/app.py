@@ -131,66 +131,135 @@ def run():
             )
 
     # Main content area
-    tab1, tab2, tab3 = st.tabs(["📤 Input", "📊 Results", "📥 Export"])
+    st.header("Input Source")
 
-    with tab1:
-        st.header("Input Source")
+    input_type = st.radio(
+        "Input Type",
+        options=["PDF File", "Text Input"],
+        horizontal=True,
+    )
 
-        input_type = st.radio(
-            "Input Type",
-            options=["PDF File", "Text Input"],
-            horizontal=True,
+    text_preview_placeholder = None
+    if input_type == "PDF File":
+        uploaded_file = st.file_uploader(
+            "Upload PDF",
+            type=["pdf"],
+            help="Upload a PDF file containing references",
         )
 
-        if input_type == "PDF File":
-            uploaded_file = st.file_uploader(
-                "Upload PDF",
-                type=["pdf"],
-                help="Upload a PDF file containing references",
-            )
+        if uploaded_file:
+            st.success(f"Uploaded: {uploaded_file.name}")
 
-            if uploaded_file:
-                st.success(f"Uploaded: {uploaded_file.name}")
+            # Extract text preview
+            if "preview_text" not in st.session_state:
+                st.session_state.preview_text = None
 
-                # Extract text preview
-                if st.button("Preview Extracted Text"):
-                    with st.spinner("Extracting text..."):
-                        preview = extract_pdf_preview(uploaded_file)
-                        st.text_area(
-                            "Extracted Text Preview (first 2000 chars)",
-                            value=preview[:2000],
-                            height=300,
-                        )
+            # Only show preview buttons if no results yet
+            if st.session_state.results is None:
+                # Use a container we can clear later
+                preview_container = st.empty()
+                
+                with preview_container.container():
+                    preview_btn_placeholder = st.empty()
+                    
+                    if st.session_state.preview_text:
+                         if preview_btn_placeholder.button("Refresh Preview"):
+                             preview_btn_placeholder.empty() # Clear button
+                             with st.spinner("Extracting text..."):
+                                 pdf_text = extract_pdf_preview(uploaded_file)
+                                 st.session_state.preview_text = pdf_text
+                             st.rerun()
+                    else:
+                        if preview_btn_placeholder.button("Preview Text"):
+                            preview_btn_placeholder.empty() # Clear button
+                            with st.spinner("Extracting text..."):
+                                pdf_text = extract_pdf_preview(uploaded_file)
+                                st.session_state.preview_text = pdf_text
+                            st.rerun()
 
-        else:
-            text_input = st.text_area(
-                "Paste References",
-                height=300,
-                placeholder="Paste your reference text here...",
-                help="Paste the references section from your document",
-            )
-
-        # Process button
-        st.divider()
-
-        if st.button("🚀 Process References", type="primary", width="stretch"):
-            # Validate inputs
-            if input_type == "PDF File" and not uploaded_file:
-                st.error("Please upload a PDF file")
-            elif input_type == "Text Input" and not text_input.strip():
-                st.error("Please enter some text")
-            elif provider in ["openai", "anthropic"] and not api_key:
-                st.error(f"Please enter your {provider.title()} API key")
-            elif not openalex_email:
-                st.warning(
-                    "No email provided - OpenAlex will be limited to 1 req/sec. "
-                    "Add your email for 10x faster validation."
+            text_preview_placeholder = st.empty()
+            if st.session_state.preview_text:
+                text_preview_placeholder.text_area(
+                    "Extracted Text",
+                    value=st.session_state.preview_text,
+                    height=300,
                 )
-                process = st.button("Continue anyway")
-                if not process:
-                    st.stop()
 
-            # Build config
+    else:
+        # Define preview_container for text input case too (empty) so we don't error
+        preview_container = st.empty()
+        
+        text_input = st.text_area(
+            "Paste References",
+            height=300,
+            placeholder="Paste your reference text here...",
+            help="Paste the references section from your document",
+        )
+
+    # Process button
+    st.divider()
+
+    process_btn_placeholder = st.empty()
+
+    # Main Layout Definitions
+    metrics_container = st.empty()
+    progress_placeholder = st.empty()
+    log_expander = st.expander("Activity Log", expanded=False)
+    log_container = log_expander.container(height=300)
+    
+    # Initialize logs in session state
+    if "activity_logs" not in st.session_state:
+        st.session_state.activity_logs = []
+
+    # Render existing logs
+    for log_msg in st.session_state.activity_logs:
+        log_container.write(log_msg)
+    
+    # Filter container - rendered before table
+    filter_container = st.empty()
+    
+    table_container = st.empty()
+    details_container = st.empty()
+
+    process_clicked = False
+    
+    # Determine if process should be disabled
+    disable_process = False
+    if input_type == "PDF File" and not uploaded_file:
+        disable_process = True
+    elif input_type == "Text Input" and not text_input.strip():
+        disable_process = True
+
+    if process_btn_placeholder.button("🚀 Process References", type="primary", disabled=disable_process, key="process_btn_main"):
+        process_clicked = True
+        # Disable button while processing
+        process_btn_placeholder.button("Processing...", type="primary", disabled=True, key="process_btn_processing")
+        # Clear preview buttons if they exist
+        preview_container.empty()
+
+    if process_clicked:
+        # Validate inputs
+        if input_type == "PDF File" and not uploaded_file:
+            st.error("Please upload a PDF file")
+            process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_error_pdf") # Reset button
+        elif input_type == "Text Input" and not text_input.strip():
+            st.error("Please enter some text")
+            process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_error_text") # Reset button
+        elif provider in ["openai", "anthropic"] and not api_key:
+            st.error(f"Please enter your {provider.title()} API key")
+            process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_error_api") # Reset button
+        elif not openalex_email:
+            st.warning(
+                "No email provided - OpenAlex will be limited to 1 req/sec. "
+                "Add your email for 10x faster validation."
+            )
+            # Simple continue for now as complex flow inside button click is tricky
+            # Ideally we'd have a separate state for this check
+            st.info("Please provide an email in the sidebar to continue efficiently.")
+            process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_warning_email") # Reset button
+            st.stop()
+        else:
+             # Build config
             config = Config(
                 llm_provider=LLMProvider(provider),
                 llm_model=model,
@@ -202,141 +271,176 @@ def run():
                 pdf_chunk_size=chunk_size,
                 export_include_raw_openalex=include_raw,
             )
-
-            # Process
-            with st.spinner("Processing references..."):
-                try:
-                    if input_type == "PDF File":
-                        results = process_pdf(uploaded_file, config)
-                    else:
-                        results = process_text(text_input, config)
-
-                    st.session_state.results = results
-                    st.success(
-                        f"✅ Processed {results.total_references} references! "
-                        f"Go to the Results tab to view."
+            try:
+                # Progress bar
+                progress_bar = progress_placeholder.progress(0, text="Starting...")
+                
+                # Render disabled filter to reserve space and match layout
+                with filter_container.container():
+                    st.multiselect(
+                        "Filter by Status",
+                        options=["validated", "partial_match", "not_found", "error"],
+                        default=["validated", "partial_match", "not_found", "error"],
+                        disabled=True,
+                        key="status_filter_disabled"
                     )
-                except Exception as e:
-                    st.error(f"Error processing: {str(e)}")
-                    import traceback
+                
+                # Run pipeline
+                results = asyncio.run(
+                    process_with_progress(
+                        input_type,
+                        uploaded_file if input_type == "PDF File" else text_input,
+                        config,
+                        log_container,
+                        metrics_container,
+                        table_container,
+                        details_container,
+                        progress_bar,
+                        text_preview_placeholder
+                    )
+                )
 
-                    st.code(traceback.format_exc())
+                st.session_state.results = results
+                progress_bar.progress(1.0, text="Processing Complete!")
+                
+                # Restore button
+                process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_restore")
+                
+                # Render the FINAL view (enabled filter, downloads, details)
+                # This will seamlessly replace the live view components
+                render_results_view(results, metrics_container, filter_container, table_container, details_container, include_raw)
 
-    with tab2:
-        st.header("Validation Results")
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+                import traceback # Added import
+                st.code(traceback.format_exc()) # Added traceback
+                process_btn_placeholder.button("🚀 Process References", type="primary", key="process_btn_error_restore")
 
-        if st.session_state.results is None:
-            st.info("No results yet. Process some references first!")
-        else:
-            results = st.session_state.results
+    # If we have results (either just finished or from session state), ensure they are displayed.
+    # If we just finished, the `render_results_view` above handled it.
+    # If we re-ran (e.g. filter change), we need to re-render them.
+    
+    if st.session_state.results is not None and not process_clicked:
+        render_results_view(st.session_state.results, metrics_container, filter_container, table_container, details_container, include_raw)
 
-            # Summary metrics
-            col1, col2, col3, col4, col5 = st.columns(5)
-            with col1:
-                st.metric("Total", results.total_references)
-            with col2:
-                st.metric("Validated", results.validated_count)
-            with col3:
-                st.metric("Partial Match", results.partial_match_count)
-            with col4:
-                st.metric("Not Found", results.not_found_count)
-            with col5:
-                st.metric("Errors", results.error_count)
 
-            # Status filter
-            status_filter = st.multiselect(
-                "Filter by Status",
-                options=["validated", "partial_match", "not_found", "error"],
-                default=["validated", "partial_match", "not_found", "error"],
+def render_results_view(results, metrics_container, filter_container, table_container, details_container, include_raw):
+    """Render the full results view into the provided containers."""
+    
+    # Metrics
+    with metrics_container.container():
+        # Use 6 columns to include PDF Progress (100% at end)
+        col0, col1, col2, col3, col4, col5 = st.columns(6)
+        with col0:
+            st.metric("PDF Parsed", "100%")
+        with col1:
+            st.metric("Total Found", results.total_references)
+        with col2:
+            st.metric("Validated", results.validated_count)
+        with col3:
+            st.metric("Partial Match", results.partial_match_count)
+        with col4:
+            st.metric("Not Found", results.not_found_count)
+        with col5:
+            st.metric("Errors", results.error_count)
+
+    # Filter (Enabled)
+    with filter_container.container():
+        # We use a different key than the disabled one to avoid conflicts?
+        # Actually, if we use the same key, Streamlit might complain about changing 'disabled'.
+        # So we use a different key.
+        status_filter = st.multiselect(
+            "Filter by Status",
+            options=["validated", "partial_match", "not_found", "error"],
+            default=["validated", "partial_match", "not_found", "error"],
+            key="status_filter_active"
+        )
+
+    # Table
+    with table_container.container():
+        filtered_results = [
+            r for r in results.validation_results if r.status.value in status_filter
+        ]
+
+        if filtered_results:
+            df = build_results_dataframe(filtered_results)
+            st.dataframe(
+                df,
+                width="stretch",
+                height=500,
+                column_config={
+                    "title": st.column_config.TextColumn("Title", width="large"),
+                    "authors": st.column_config.TextColumn("Authors", width="medium"),
+                    "confidence": st.column_config.ProgressColumn(
+                        "Confidence", min_value=0, max_value=1
+                    ),
+                    "openalex_url": st.column_config.LinkColumn("OpenAlex"),
+                },
             )
-
-            # Results table
-            st.subheader("References")
-
-            filtered_results = [
-                r for r in results.validation_results if r.status.value in status_filter
-            ]
-
-            if filtered_results:
-                df = build_results_dataframe(filtered_results)
-                st.dataframe(
-                    df,
-                    width="stretch",
-                    height=500,
-                    column_config={
-                        "title": st.column_config.TextColumn("Title", width="large"),
-                        "authors": st.column_config.TextColumn(
-                            "Authors", width="medium"
-                        ),
-                        "confidence": st.column_config.ProgressColumn(
-                            "Confidence",
-                            min_value=0,
-                            max_value=1,
-                        ),
-                        "openalex_url": st.column_config.LinkColumn("OpenAlex"),
-                    },
-                )
-
-                # Detailed view
-                st.subheader("Detailed View")
-                selected_idx = st.number_input(
-                    "Reference #",
-                    min_value=1,
-                    max_value=len(filtered_results),
-                    value=1,
-                )
-
-                if selected_idx:
-                    show_reference_details(filtered_results[selected_idx - 1])
-            else:
-                st.info("No results match the selected filters")
-
-    with tab3:
-        st.header("Export Results")
-
-        if st.session_state.results is None:
-            st.info("No results to export. Process some references first!")
         else:
-            results = st.session_state.results
+            st.info("No results match the selected filters")
 
-            st.subheader("Export Options")
-
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                if st.button("📊 Download Excel", width="stretch"):
-                    excel_data = export_to_excel_bytes(results, include_raw)
-                    st.download_button(
-                        label="Download Excel File",
-                        data=excel_data,
-                        file_name="references.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-
-            with col2:
-                if st.button("📄 Download JSON", width="stretch"):
-                    json_data = export_to_json_str(results)
-                    st.download_button(
-                        label="Download JSON File",
-                        data=json_data,
-                        file_name="references.json",
-                        mime="application/json",
-                    )
-
-            with col3:
-                if st.button("📝 Download CSV", width="stretch"):
-                    csv_data = export_to_csv_str(results)
-                    st.download_button(
-                        label="Download CSV File",
-                        data=csv_data,
-                        file_name="references.csv",
-                        mime="text/csv",
-                    )
+    # Details & Export
+    with details_container.container():
+        st.divider()
+        st.header("Export Results")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            excel_data = export_to_excel_bytes(results, include_raw)
+            st.download_button(
+                label="📊 Download Excel",
+                data=excel_data,
+                file_name="references.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="btn_xls_download",
+                use_container_width=True,
+            )
+        with col2:
+            json_data = export_to_json_str(results)
+            st.download_button(
+                label="📄 Download JSON",
+                data=json_data,
+                file_name="references.json",
+                mime="application/json",
+                key="btn_json_download",
+                use_container_width=True,
+            )
+        with col3:
+            csv_data = export_to_csv_str(results)
+            st.download_button(
+                label="📝 Download CSV",
+                data=csv_data,
+                file_name="references.csv",
+                mime="text/csv",
+                key="btn_csv_download",
+                use_container_width=True,
+            )
+        
+        st.divider()
+        st.header("Detailed View")
+        
+        # Re-filter for details
+        filtered_results_details = [
+            r for r in results.validation_results if r.status.value in status_filter
+        ]
+        
+        if filtered_results_details:
+            selected_idx = st.number_input(
+                "Reference #",
+                min_value=1,
+                max_value=len(filtered_results_details),
+                value=1,
+                key="details_idx_input"
+            )
+            if selected_idx:
+                show_reference_details(filtered_results_details[selected_idx - 1])
 
 
 def extract_pdf_preview(uploaded_file) -> str:
     """Extract text preview from uploaded PDF."""
     from authen.pdf import PDFExtractor
+    import tempfile
+    from pathlib import Path
 
     # Save to temp file
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
@@ -351,28 +455,192 @@ def extract_pdf_preview(uploaded_file) -> str:
         Path(tmp_path).unlink(missing_ok=True)
 
 
-def process_pdf(uploaded_file, config: Config):
-    """Process a PDF file through the pipeline."""
+async def process_with_progress(
+    input_type: str,
+    source,
+    config: Config,
+    log_container,
+    metrics_container,
+    table_container,
+    details_container,
+    progress_bar,
+    text_preview_placeholder=None
+):
+    """Process with live progress updates."""
+    from authen.core.schemas import PipelineEventType
     from authen.pipeline.orchestrator import Pipeline
-
-    # Save to temp file
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp.write(uploaded_file.getvalue())
-        tmp_path = tmp.name
-
-    try:
-        pipeline = Pipeline(config)
-        return asyncio.run(pipeline.process(tmp_path))
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
-
-
-def process_text(text: str, config: Config):
-    """Process text through the pipeline."""
-    from authen.pipeline.orchestrator import Pipeline
+    import tempfile
+    from pathlib import Path
+    import pandas as pd
 
     pipeline = Pipeline(config)
-    return asyncio.run(pipeline.process_text(text))
+    
+    tmp_path = None
+    if input_type == "PDF File":
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(source.getvalue())
+            tmp_path = tmp.name
+        process_source = tmp_path
+    else:
+        process_source = source
+
+    try:
+        if input_type == "PDF File":
+            stream = pipeline.process_events(process_source)
+        else:
+            stream = pipeline.process_text_events(process_source)
+
+        found_count = 0
+        validated_count = 0
+        partial_count = 0
+        not_found_count = 0
+        error_count = 0
+        pdf_progress = 0
+        
+        results_buffer = []
+        
+        # Prepare placeholders
+        # Since containers are now st.empty(), we can use them directly with .container()
+        # to replace content. We don't need to create new placeholders inside them.
+        metrics_placeholder = metrics_container
+        table_placeholder = table_container
+        details_placeholder = details_container
+        
+        # Clear previous logs
+        st.session_state.activity_logs = []
+        log_container.empty()
+        
+        # Initial Metrics
+        with metrics_placeholder.container():
+            col0, col1, col2, col3, col4, col5 = st.columns(6)
+            col0.metric("PDF Parsed", "0%")
+            col1.metric("Total Found", 0)
+            col2.metric("Validated", 0)
+            col3.metric("Partial Match", 0)
+            col4.metric("Not Found", 0)
+            col5.metric("Errors", 0)
+
+        # Initial Details Placeholder
+        with details_placeholder.container():
+            st.divider()
+            st.header("Detailed View")
+            st.info("Details will appear here as references are processed...")
+
+        async for event in stream:
+            if event.type == PipelineEventType.EXTRACTION_COMPLETE:
+                msg = "✅ Extraction complete"
+                log_container.write(msg)
+                st.session_state.activity_logs.append(msg)
+                progress_bar.progress(0.05, text="Extraction complete. Analyzing document...")
+                
+                # Update preview text if available and placeholder exists
+                if text_preview_placeholder and event.data.text:
+                    st.session_state.preview_text = event.data.text
+                    text_preview_placeholder.text_area(
+                        "Extracted Text",
+                        value=event.data.text,
+                        height=300,
+                    )
+            
+            elif event.type == PipelineEventType.CHUNK_PROCESSED:
+                current = event.data["current"]
+                total = event.data["total"]
+                if total > 0:
+                    pct = int((current / total) * 100)
+                    pdf_progress = pct
+                    # Map to 5-40% range
+                    prog = 0.05 + (current / total) * 0.35
+                    progress_bar.progress(prog, text=f"Analyzing document... {pct}%")
+                    
+                    # Update metrics with new PDF progress
+                    with metrics_placeholder.container():
+                        col0, col1, col2, col3, col4, col5 = st.columns(6)
+                        col0.metric("PDF Parsed", f"{pdf_progress}%")
+                        col1.metric("Total Found", found_count)
+                        col2.metric("Validated", validated_count)
+                        col3.metric("Partial Match", partial_count)
+                        col4.metric("Not Found", not_found_count)
+                        col5.metric("Errors", error_count)
+
+            elif event.type == PipelineEventType.REFERENCE_FOUND:
+                found_count += 1
+                msg = f"🔍 {event.message}"
+                log_container.write(msg)
+                st.session_state.activity_logs.append(msg)
+                # Update metrics
+                with metrics_placeholder.container():
+                    col0, col1, col2, col3, col4, col5 = st.columns(6)
+                    col0.metric("PDF Parsed", f"{pdf_progress}%")
+                    col1.metric("Total Found", found_count)
+                    col2.metric("Validated", validated_count)
+                    col3.metric("Partial Match", partial_count)
+                    col4.metric("Not Found", not_found_count)
+                    col5.metric("Errors", error_count)
+                
+            elif event.type == PipelineEventType.VALIDATION_COMPLETE:
+                res = event.data
+                if res.status.value == "validated":
+                    validated_count += 1
+                elif res.status.value == "partial_match":
+                    partial_count += 1
+                elif res.status.value == "not_found":
+                    not_found_count += 1
+                else:
+                    error_count += 1
+
+                msg = f"✅ {event.message}"
+                log_container.write(msg)
+                st.session_state.activity_logs.append(msg)
+                results_buffer.append(res)
+                
+                if found_count > 0:
+                    ratio = (validated_count + partial_count + not_found_count + error_count) / found_count
+                    prog = 0.40 + (ratio * 0.60)
+                    progress_bar.progress(min(prog, 0.99), text=f"Validated {len(results_buffer)}/{found_count} references")
+
+                # Update metrics
+                with metrics_placeholder.container():
+                    col0, col1, col2, col3, col4, col5 = st.columns(6)
+                    col0.metric("PDF Parsed", f"{pdf_progress}%")
+                    col1.metric("Total Found", found_count)
+                    col2.metric("Validated", validated_count)
+                    col3.metric("Partial Match", partial_count)
+                    col4.metric("Not Found", not_found_count)
+                    col5.metric("Errors", error_count)
+
+                if results_buffer:
+                    df = build_results_dataframe(results_buffer)
+                    table_placeholder.dataframe(
+                        df,
+                        width="stretch",
+                        height=500,
+                        column_config={
+                            "title": st.column_config.TextColumn("Title", width="large"),
+                            "authors": st.column_config.TextColumn("Authors", width="medium"),
+                            "confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=1),
+                            "openalex_url": st.column_config.LinkColumn("OpenAlex"),
+                        },
+                    )
+                    
+                    # Update details view with the latest item
+                    with details_placeholder.container():
+                        st.divider()
+                        st.header("Detailed View")
+                        st.caption(f"Showing details for most recent result ({len(results_buffer)}):")
+                        show_reference_details(res)
+            
+            elif event.type == PipelineEventType.COMPLETED:
+                return event.data
+            
+            elif event.type == PipelineEventType.ERROR:
+                msg = f"Error: {event.message}"
+                log_container.error(msg)
+                st.session_state.activity_logs.append(msg)
+                raise Exception(event.message)
+
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
 
 
 def build_results_dataframe(results) -> pd.DataFrame:

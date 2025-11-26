@@ -313,3 +313,24 @@ class PipelineResult(BaseModel):
         self.error_count = sum(
             1 for r in self.validation_results if r.status == ValidationStatus.ERROR
         )
+
+
+class PipelineEventType(str, Enum):
+    """Types of events emitted during pipeline processing."""
+
+    EXTRACTION_COMPLETE = "extraction_complete"
+    CHUNK_PROCESSED = "chunk_processed"
+    REFERENCE_FOUND = "reference_found"
+    VALIDATION_COMPLETE = "validation_complete"
+    COMPLETED = "completed"
+    ERROR = "error"
+
+
+class PipelineEvent(BaseModel):
+    """Event emitted during pipeline processing."""
+
+    type: PipelineEventType = Field(description="Type of event")
+    data: dict | ReferenceData | ValidationResult | PipelineResult | ExtractionResult | str | None = Field(
+        default=None, description="Event data payload"
+    )
+    message: str | None = Field(default=None, description="Human-readable message")

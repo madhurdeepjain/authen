@@ -137,6 +137,7 @@ class ReferenceParser:
     async def parse_streaming(
         self,
         text: str,
+        on_chunk_complete: callable = None,
     ) -> AsyncIterator[ReferenceData]:
         """
         Parse references from text in streaming mode.
@@ -165,6 +166,14 @@ class ReferenceParser:
             # Single chunk - just parse and yield
             result = await self.provider.parse_references(text, self.system_prompt)
             references = self._convert_references(result)
+            
+            # Report progress for single chunk
+            if on_chunk_complete:
+                if asyncio.iscoroutinefunction(on_chunk_complete):
+                    await on_chunk_complete(1, 1)
+                else:
+                    on_chunk_complete(1, 1)
+
             for ref in references:
                 if self._is_duplicate(ref, seen_dois, seen_titles):
                     continue
@@ -179,8 +188,13 @@ class ReferenceParser:
         semaphore = asyncio.Semaphore(self.max_concurrent_chunks)
         output_queue: asyncio.Queue[ReferenceData | None] = asyncio.Queue()
 
+        # Track completed chunks for progress reporting
+        completed_chunks = 0
+        progress_lock = asyncio.Lock()
+
         async def process_chunk(chunk_num: int, chunk: str) -> None:
             """Process a single chunk and put results in queue."""
+            nonlocal completed_chunks
             async with semaphore:
                 logger.info("parsing_chunk", chunk_num=chunk_num + 1, total=len(chunks))
                 try:
@@ -196,6 +210,16 @@ class ReferenceParser:
                         chunk_num=chunk_num + 1,
                         error=str(e),
                     )
+                finally:
+                    if on_chunk_complete:
+                        async with progress_lock:
+                            completed_chunks += 1
+                            current_progress = completed_chunks
+                        
+                        if asyncio.iscoroutinefunction(on_chunk_complete):
+                            await on_chunk_complete(current_progress, len(chunks))
+                        else:
+                            on_chunk_complete(current_progress, len(chunks))
 
         async def run_all_chunks() -> None:
             """Run all chunk processing tasks and signal completion."""
