@@ -1,12 +1,4 @@
-"""
-Excel export for validated references.
-
-Exports references to Excel format with:
-- All reference fields as columns
-- Authors serialized as JSON
-- Validation status and confidence
-- Optional raw OpenAlex data
-"""
+"""Excel export utilities for validated references."""
 
 import json
 from pathlib import Path
@@ -316,74 +308,3 @@ def export_to_excel(
     """
     exporter = ExcelExporter(include_raw_openalex=include_raw_openalex)
     return exporter.export(results, output_path)
-
-
-def export_to_json(
-    results: list[ValidationResult] | PipelineResult,
-    output_path: str | Path,
-) -> Path:
-    """
-    Export results to JSON.
-
-    Args:
-        results: Validation results or pipeline result
-        output_path: Output file path
-
-    Returns:
-        Path to created file
-    """
-    output_path = Path(output_path)
-
-    if isinstance(results, PipelineResult):
-        data = results.model_dump()
-    else:
-        data = [r.model_dump() for r in results]
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-
-    logger.info("exported_to_json", path=str(output_path))
-    return output_path
-
-
-def export_to_csv(
-    results: list[ValidationResult] | PipelineResult,
-    output_path: str | Path,
-) -> Path:
-    """
-    Export results to CSV (simplified format).
-
-    Args:
-        results: Validation results or pipeline result
-        output_path: Output file path
-
-    Returns:
-        Path to created file
-    """
-    output_path = Path(output_path)
-
-    if isinstance(results, PipelineResult):
-        validation_results = results.validation_results
-    else:
-        validation_results = results
-
-    rows = []
-    for i, result in enumerate(validation_results):
-        ref = result.get_best_reference()
-        row = {
-            "reference_number": ref.reference_number or i + 1,
-            "title": ref.title,
-            "authors": ", ".join(a.display_name for a in ref.authors),
-            "year": ref.year,
-            "publication": ref.publication,
-            "doi": ref.doi,
-            "validation_status": result.status.value,
-            "confidence": result.confidence,
-        }
-        rows.append(row)
-
-    df = pd.DataFrame(rows)
-    df.to_csv(output_path, index=False)
-
-    logger.info("exported_to_csv", path=str(output_path))
-    return output_path

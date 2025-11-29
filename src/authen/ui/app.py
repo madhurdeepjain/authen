@@ -15,12 +15,16 @@ import os
 import tempfile
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import streamlit as st
-import altair as alt
 
 import authen  # noqa: F401 - triggers .env loading
 from authen.core.config import Config, LLMProvider
+from authen.core.schemas import PipelineEventType
+from authen.export.excel import ExcelExporter
+from authen.pdf import PDFExtractor
+from authen.pipeline.orchestrator import Pipeline
 
 
 def run():
@@ -388,9 +392,8 @@ def run():
                     key="process_btn_error_restore",
                 )
 
-    # If we have results (either just finished or from session state), ensure they are displayed.
-    # If we just finished, the `render_results_view` above handled it.
-    # If we re-ran (e.g. filter change), we need to re-render them.
+    # If results exist (fresh or from session state), make sure they are visible.
+    # The live render handles fresh runs, but reruns (filters etc.) need a refresh.
 
     if st.session_state.results is not None and not process_clicked:
         render_results_view(
@@ -607,9 +610,7 @@ def render_results_view(
 
     # Filter (Enabled)
     with filter_container.container():
-        # We use a different key than the disabled one to avoid conflicts?
-        # Actually, if we use the same key, Streamlit might complain about changing 'disabled'.
-        # So we use a different key.
+        # Use a new key so toggling the disabled state never upsets Streamlit.
         status_filter = st.multiselect(
             "Filter by Status",
             options=["validated", "partial_match", "not_found", "error"],
@@ -707,10 +708,6 @@ def render_results_view(
 
 def extract_pdf_preview(uploaded_file) -> str:
     """Extract text preview from uploaded PDF."""
-    from authen.pdf import PDFExtractor
-    import tempfile
-    from pathlib import Path
-
     # Save to temp file
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(uploaded_file.getvalue())
@@ -736,11 +733,6 @@ async def process_with_progress(
     text_preview_placeholder=None,
 ):
     """Process with live progress updates."""
-    from authen.core.schemas import PipelineEventType
-    from authen.pipeline.orchestrator import Pipeline
-    import tempfile
-    from pathlib import Path
-    import pandas as pd
 
     pipeline = Pipeline(config)
 
@@ -768,9 +760,7 @@ async def process_with_progress(
 
         results_buffer = []
 
-        # Prepare placeholders
-        # Since containers are now st.empty(), we can use them directly with .container()
-        # to replace content. We don't need to create new placeholders inside them.
+        # Prepare placeholders: st.empty() containers can be re-used directly.
         metrics_placeholder = metrics_container
         table_placeholder = table_container
         details_placeholder = details_container
@@ -872,7 +862,9 @@ async def process_with_progress(
                     prog = 0.40 + (ratio * 0.60)
                     progress_bar.progress(
                         min(prog, 0.99),
-                        text=f"Validated {len(results_buffer)}/{found_count} references",
+                        text=(
+                            f"Validated {len(results_buffer)}/{found_count} references"
+                        ),
                     )
 
                 # Update metrics
@@ -910,7 +902,8 @@ async def process_with_progress(
                         st.divider()
                         st.header("Detailed View")
                         st.caption(
-                            f"Showing details for most recent result ({len(results_buffer)}):"
+                            "Showing details for most recent result "
+                            f"({len(results_buffer)}):"
                         )
                         show_reference_details(res)
 
@@ -1025,8 +1018,6 @@ def show_reference_details(result):
 
 def export_to_excel_bytes(results, include_raw: bool) -> bytes:
     """Export results to Excel and return bytes."""
-    from authen.export.excel import ExcelExporter
-
     exporter = ExcelExporter(include_raw_openalex=include_raw)
 
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:

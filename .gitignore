@@ -75,12 +75,14 @@ venv.bak/
 cython_debug/
 
 # Project specific
-data/
+data/*
+!data/References.pdf
 output/
 *.xlsx
 *.csv
 references.json
 *.pdf
+!data/References.pdf
 
 .ruff_cache/
 

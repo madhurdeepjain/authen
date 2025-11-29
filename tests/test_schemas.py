@@ -1,7 +1,5 @@
 """Tests for core schemas."""
 
-import pytest
-
 from authen.core.schemas import (
     Affiliation,
     Author,

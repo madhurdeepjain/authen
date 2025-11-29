@@ -13,10 +13,9 @@ Supports two execution modes:
 """
 
 import asyncio
-import logging
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import AsyncIterator, Optional
 
 import structlog
 
@@ -532,16 +531,15 @@ class Pipeline:
         if format == "excel":
             return self.exporter.export(result, output_path)
         elif format == "json":
-            from authen.export.excel import export_to_json
+            from authen.export.json import export_to_json
 
             return export_to_json(result, output_path)
         elif format == "csv":
-            from authen.export.excel import export_to_csv
+            from authen.export.csv import export_to_csv
 
             return export_to_csv(result, output_path)
         else:
             raise ValueError(f"Unsupported format: {format}")
-
 
     async def process_events(self, pdf_path: str) -> AsyncIterator[PipelineEvent]:
         """
@@ -554,7 +552,7 @@ class Pipeline:
             PipelineEvent objects
         """
         queue = asyncio.Queue()
-        
+
         async def producer():
             start_time = time.time()
             max_concurrent = self.config.max_concurrent_validations
@@ -569,24 +567,27 @@ class Pipeline:
                 result.extraction = extraction_result
                 text = extraction_result.text
 
-                await queue.put(PipelineEvent(
-                    type=PipelineEventType.EXTRACTION_COMPLETE,
-                    data=extraction_result,
-                    message=f"Extracted {len(text)} characters",
-                ))
+                await queue.put(
+                    PipelineEvent(
+                        type=PipelineEventType.EXTRACTION_COMPLETE,
+                        data=extraction_result,
+                        message=f"Extracted {len(text)} characters",
+                    )
+                )
 
                 logger.info("step_2_3_streaming_parse_and_validate")
 
                 async def on_chunk_progress(current: int, total: int):
-                    await queue.put(PipelineEvent(
-                        type=PipelineEventType.CHUNK_PROCESSED,
-                        data={"current": current, "total": total},
-                        message=f"Processed chunk {current}/{total}",
-                    ))
+                    await queue.put(
+                        PipelineEvent(
+                            type=PipelineEventType.CHUNK_PROCESSED,
+                            data={"current": current, "total": total},
+                            message=f"Processed chunk {current}/{total}",
+                        )
+                    )
 
                 reference_stream = self.reference_parser.parse_streaming(
-                    text,
-                    on_chunk_complete=on_chunk_progress
+                    text, on_chunk_complete=on_chunk_progress
                 )
 
                 validation_results: list[ValidationResult] = []
@@ -595,11 +596,13 @@ class Pipeline:
                 async def tracked_stream() -> AsyncIterator[ReferenceData]:
                     async for ref in reference_stream:
                         parsed_references.append(ref)
-                        await queue.put(PipelineEvent(
-                            type=PipelineEventType.REFERENCE_FOUND,
-                            data=ref,
-                            message=f"Found reference: {ref.title[:50] if ref.title else 'Unknown'}...",
-                        ))
+                        await queue.put(
+                            PipelineEvent(
+                                type=PipelineEventType.REFERENCE_FOUND,
+                                data=ref,
+                                message=f"Found reference: {ref.title[:50] if ref.title else 'Unknown'}...",
+                            )
+                        )
                         yield ref
 
                 async for validation_result in self.validator.validate_streaming(
@@ -607,11 +610,13 @@ class Pipeline:
                     max_concurrent=max_concurrent,
                 ):
                     validation_results.append(validation_result)
-                    await queue.put(PipelineEvent(
-                        type=PipelineEventType.VALIDATION_COMPLETE,
-                        data=validation_result,
-                        message=f"Validated: {validation_result.get_best_reference().title[:50] if validation_result.get_best_reference().title else 'Unknown'}...",
-                    ))
+                    await queue.put(
+                        PipelineEvent(
+                            type=PipelineEventType.VALIDATION_COMPLETE,
+                            data=validation_result,
+                            message=f"Validated: {validation_result.get_best_reference().title[:50] if validation_result.get_best_reference().title else 'Unknown'}...",
+                        )
+                    )
 
                 # Build final result
                 result.parse_result = ParseResult(
@@ -624,21 +629,25 @@ class Pipeline:
                 result.compute_stats()
                 result.total_processing_time_seconds = time.time() - start_time
 
-                await queue.put(PipelineEvent(
-                    type=PipelineEventType.COMPLETED,
-                    data=result,
-                    message=f"Completed! Processed {result.total_references} references.",
-                ))
+                await queue.put(
+                    PipelineEvent(
+                        type=PipelineEventType.COMPLETED,
+                        data=result,
+                        message=f"Completed! Processed {result.total_references} references.",
+                    )
+                )
 
             except Exception as e:
                 logger.error("pipeline_events_error", error=str(e))
-                await queue.put(PipelineEvent(
-                    type=PipelineEventType.ERROR,
-                    message=str(e),
-                ))
+                await queue.put(
+                    PipelineEvent(
+                        type=PipelineEventType.ERROR,
+                        message=str(e),
+                    )
+                )
             finally:
                 await self.validator.close()
-                await queue.put(None) # Sentinel
+                await queue.put(None)  # Sentinel
 
         # Start producer
         asyncio.create_task(producer())
@@ -679,24 +688,27 @@ class Pipeline:
                     source_file="text_input",
                 )
 
-                await queue.put(PipelineEvent(
-                    type=PipelineEventType.EXTRACTION_COMPLETE,
-                    data=text,
-                    message="Text received",
-                ))
+                await queue.put(
+                    PipelineEvent(
+                        type=PipelineEventType.EXTRACTION_COMPLETE,
+                        data=text,
+                        message="Text received",
+                    )
+                )
 
                 logger.info("streaming_parse_and_validate")
 
                 async def on_chunk_progress(current: int, total: int):
-                    await queue.put(PipelineEvent(
-                        type=PipelineEventType.CHUNK_PROCESSED,
-                        data={"current": current, "total": total},
-                        message=f"Processed chunk {current}/{total}",
-                    ))
+                    await queue.put(
+                        PipelineEvent(
+                            type=PipelineEventType.CHUNK_PROCESSED,
+                            data={"current": current, "total": total},
+                            message=f"Processed chunk {current}/{total}",
+                        )
+                    )
 
                 reference_stream = self.reference_parser.parse_streaming(
-                    text,
-                    on_chunk_complete=on_chunk_progress
+                    text, on_chunk_complete=on_chunk_progress
                 )
 
                 validation_results: list[ValidationResult] = []
@@ -705,11 +717,13 @@ class Pipeline:
                 async def tracked_stream() -> AsyncIterator[ReferenceData]:
                     async for ref in reference_stream:
                         parsed_references.append(ref)
-                        await queue.put(PipelineEvent(
-                            type=PipelineEventType.REFERENCE_FOUND,
-                            data=ref,
-                            message=f"Found reference: {ref.title[:50] if ref.title else 'Unknown'}...",
-                        ))
+                        await queue.put(
+                            PipelineEvent(
+                                type=PipelineEventType.REFERENCE_FOUND,
+                                data=ref,
+                                message=f"Found reference: {ref.title[:50] if ref.title else 'Unknown'}...",
+                            )
+                        )
                         yield ref
 
                 async for validation_result in self.validator.validate_streaming(
@@ -717,11 +731,13 @@ class Pipeline:
                     max_concurrent=max_concurrent,
                 ):
                     validation_results.append(validation_result)
-                    await queue.put(PipelineEvent(
-                        type=PipelineEventType.VALIDATION_COMPLETE,
-                        data=validation_result,
-                        message=f"Validated: {validation_result.get_best_reference().title[:50] if validation_result.get_best_reference().title else 'Unknown'}...",
-                    ))
+                    await queue.put(
+                        PipelineEvent(
+                            type=PipelineEventType.VALIDATION_COMPLETE,
+                            data=validation_result,
+                            message=f"Validated: {validation_result.get_best_reference().title[:50] if validation_result.get_best_reference().title else 'Unknown'}...",
+                        )
+                    )
 
                 result.parse_result = ParseResult(
                     references=parsed_references,
@@ -733,21 +749,25 @@ class Pipeline:
                 result.compute_stats()
                 result.total_processing_time_seconds = time.time() - start_time
 
-                await queue.put(PipelineEvent(
-                    type=PipelineEventType.COMPLETED,
-                    data=result,
-                    message=f"Completed! Processed {result.total_references} references.",
-                ))
+                await queue.put(
+                    PipelineEvent(
+                        type=PipelineEventType.COMPLETED,
+                        data=result,
+                        message=f"Completed! Processed {result.total_references} references.",
+                    )
+                )
 
             except Exception as e:
                 logger.error("pipeline_text_events_error", error=str(e))
-                await queue.put(PipelineEvent(
-                    type=PipelineEventType.ERROR,
-                    message=str(e),
-                ))
+                await queue.put(
+                    PipelineEvent(
+                        type=PipelineEventType.ERROR,
+                        message=str(e),
+                    )
+                )
             finally:
                 await self.validator.close()
-                await queue.put(None) # Sentinel
+                await queue.put(None)  # Sentinel
 
         # Start producer
         asyncio.create_task(producer())

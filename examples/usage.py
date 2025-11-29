@@ -10,7 +10,6 @@ This script demonstrates the main features of the package:
 
 import asyncio
 import os
-from pathlib import Path
 
 # Make sure to set up your environment
 # export OPENAI_API_KEY=your-key
@@ -51,20 +50,20 @@ async def example_text_input():
     from authen import Config, Pipeline
 
     # Sample references text
-    text = """
-    References
-    
-    [1] Smith, J., & Doe, J. (2023). Machine Learning in Healthcare: 
-        A Comprehensive Review. Nature Medicine, 29(1), 123-135. 
-        https://doi.org/10.1038/s41591-023-12345
-    
-    [2] Johnson, A. B., Williams, C. D., & Brown, E. F. (2022). 
-        Deep Learning for Natural Language Processing. 
-        Proceedings of the ACL, 1234-1245.
-    
-    [3] Garcia, M., et al. (2021). Transformer Models: A Survey. 
-        arXiv:2101.12345
-    """
+    text = """\
+References
+
+[1] Smith, J., & Doe, J. (2023). Machine Learning in Healthcare:
+    A Comprehensive Review. Nature Medicine, 29(1), 123-135.
+    https://doi.org/10.1038/s41591-023-12345
+
+[2] Johnson, A. B., Williams, C. D., & Brown, E. F. (2022).
+    Deep Learning for Natural Language Processing.
+    Proceedings of the ACL, 1234-1245.
+
+[3] Garcia, M., et al. (2021). Transformer Models: A Survey.
+    arXiv:2101.12345
+"""
 
     config = Config(
         llm_provider="openai",
@@ -125,10 +124,10 @@ async def example_llm_parsing_only():
     parser = ReferenceParser(provider)
 
     # Sample text
-    text = """
-    [1] Vaswani, A., Shazeer, N., Parmar, N., et al. (2017). 
-        Attention is All You Need. NeurIPS.
-    """
+    text = """\
+[1] Vaswani, A., Shazeer, N., Parmar, N., et al. (2017).
+    Attention is All You Need. NeurIPS.
+"""
 
     # Parse
     result = await parser.parse(text)
@@ -225,7 +224,7 @@ async def example_export_formats():
         ValidationResult,
         ValidationStatus,
     )
-    from authen.export.excel import export_to_csv, export_to_excel, export_to_json
+    from authen.export import export_to_csv, export_to_excel, export_to_json
 
     # Create sample results
     results = [
@@ -262,9 +261,9 @@ async def example_with_local_llm():
 
     pipeline = Pipeline(config)
 
-    text = """
-    [1] Test Reference. (2023). Some Paper Title. Some Journal.
-    """
+    text = """\
+[1] Test Reference. (2023). Some Paper Title. Some Journal.
+"""
 
     result = await pipeline.process_text(text)
     print(f"Processed {result.total_references} references using local LLM")

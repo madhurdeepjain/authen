@@ -16,8 +16,8 @@ class LLMProvider(str, Enum):
 
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    GOOGLE = "google"
     OLLAMA = "ollama"
-    GOOGLE = "google"  # Google Gemini models
 
 
 class Config(BaseSettings):

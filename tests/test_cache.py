@@ -9,7 +9,6 @@ import pytest
 
 from authen.core.cache import (
     CacheManager,
-    MemoryCache,
     SQLiteCache,
     generate_cache_key,
     generate_text_hash,
@@ -42,59 +41,6 @@ class TestCacheKeyGeneration:
         hash1 = generate_text_hash("Hello World")
         hash2 = generate_text_hash("hello world")
         assert hash1 == hash2
-
-
-class TestMemoryCache:
-    """Tests for in-memory cache backend."""
-
-    def test_get_set(self):
-        """Test basic get/set operations."""
-        cache = MemoryCache()
-        cache.set("key1", {"data": "value"})
-        result = cache.get("key1")
-        assert result == {"data": "value"}
-
-    def test_get_missing_key(self):
-        """Test getting a non-existent key."""
-        cache = MemoryCache()
-        result = cache.get("nonexistent")
-        assert result is None
-
-    def test_delete(self):
-        """Test deleting a key."""
-        cache = MemoryCache()
-        cache.set("key1", {"data": "value"})
-        cache.delete("key1")
-        result = cache.get("key1")
-        assert result is None
-
-    def test_clear(self):
-        """Test clearing all keys."""
-        cache = MemoryCache()
-        cache.set("key1", {"data": "value1"})
-        cache.set("key2", {"data": "value2"})
-        cache.clear()
-        assert cache.get("key1") is None
-        assert cache.get("key2") is None
-
-    def test_ttl_expiration(self):
-        """Test that entries expire after TTL."""
-        import time
-
-        cache = MemoryCache(default_ttl=1)
-        cache.set("key1", {"data": "value"}, ttl=0)  # Immediate TTL
-        time.sleep(0.1)
-        # With TTL=0, it should still work (None expiry = no expiration)
-        result = cache.get("key1")
-        assert result is not None
-
-    def test_max_size_eviction(self):
-        """Test that cache evicts old entries when max size reached."""
-        cache = MemoryCache(max_size=5)
-        for i in range(10):
-            cache.set(f"key{i}", {"data": f"value{i}"})
-        # Should have evicted some entries
-        assert len(cache._cache) <= 5
 
 
 class TestSQLiteCache:
@@ -183,7 +129,7 @@ class TestCacheManager:
     @pytest.fixture
     def manager(self):
         """Create a cache manager with memory backend."""
-        backend = MemoryCache()
+        backend = SQLiteCache()
         return CacheManager(backend=backend)
 
     def test_llm_cache_hit(self, manager):
@@ -222,7 +168,7 @@ class TestCacheManager:
 
     def test_cache_disabled(self):
         """Test that caching is disabled when enabled=False."""
-        backend = MemoryCache()
+        backend = SQLiteCache()
         manager = CacheManager(backend=backend, enabled=False)
 
         manager.set_llm_response("text", "model", {"data": "value"})

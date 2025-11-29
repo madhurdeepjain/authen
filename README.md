@@ -25,20 +25,21 @@ authen/
 
 ## Installation
 
+Use [uv](https://docs.astral.sh/uv/) for dependency management and execution.
+
 ```bash
 # Clone the repository
 git clone <your-repo-url>
 cd authen
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Create and activate a virtual environment managed by uv
+uv venv
 
-# Install in development mode
-pip install -e ".[dev]"
+# Install dependencies (development extras by default)
+uv pip install -e ".[dev]"
 
-# For local LLM support (Ollama)
-pip install -e ".[local-llm]"
+# Optional: add local LLM integrations (Ollama)
+uv pip install -e ".[local-llm]"
 ```
 
 ## Configuration
@@ -60,17 +61,26 @@ OLLAMA_BASE_URL=http://localhost:11434
 
 ## Usage
 
+### Web UI
+
+```bash
+# Start the Streamlit interface
+uv run authen-ui
+# Or run the app module directly
+uv run streamlit run src/authen/ui/app.py
+```
+
 ### Command Line
 
 ```bash
-# Process a PDF file
-authen process input.pdf --output references.xlsx
+# Process the included sample references
+uv run authen process data/References.pdf --output references.xlsx
 
-# Process with specific LLM provider
-authen process input.pdf --provider openai --model gpt-5
+# Process with a specific LLM provider/model
+uv run authen process input.pdf --provider openai --model gpt-5
 
 # Validate only (from existing references JSON)
-authen validate references.json --output validated.xlsx
+uv run authen validate references.json --output validated.xlsx
 ```
 
 ### Python API
@@ -81,8 +91,8 @@ from authen.core.config import Config
 
 # Initialize pipeline
 config = Config(
-    llm_provider="openai",
-    llm_model="gpt-5",
+    llm_provider="google",
+    llm_model="gemini-2.5-flash",
     openalex_email="your@email.com"
 )
 pipeline = Pipeline(config)
@@ -94,13 +104,14 @@ results = await pipeline.process("paper.pdf")
 pipeline.export(results, "references.xlsx")
 ```
 
-### Web UI
+## Sample Data
+
+The repository ships with `data/References.pdf`, an example set of bibliography entries you can use
+to try the full pipeline end-to-end. For quick smoke tests:
 
 ```bash
-# Start the Streamlit interface
-authen-ui
-# Or
-streamlit run src/authen/ui/app.py
+uv run authen process data/References.pdf --output demo.xlsx
+uv run authen-ui  # then upload the same PDF via the UI
 ```
 
 ## Subpackage Usage
