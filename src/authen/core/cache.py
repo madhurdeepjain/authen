@@ -130,22 +130,42 @@ class SQLiteCache(CacheBackend):
     def get(self, key: str) -> dict | None:
         """Get a value from cache if not expired."""
         conn = self._get_connection()
+        current_time = time.time()
         cursor = conn.execute(
             """
             SELECT value, expires_at FROM cache
             WHERE key = ? AND (expires_at IS NULL OR expires_at > ?)
             """,
-            (key, time.time()),
+            (key, current_time),
         )
         row = cursor.fetchone()
 
         if row is None:
+            # Check if key exists but expired
+            cursor_check = conn.execute(
+                "SELECT expires_at FROM cache WHERE key = ?",
+                (key,),
+            )
+            expired_row = cursor_check.fetchone()
+            if expired_row:
+                logger.debug(
+                    "cache_expired",
+                    key=key[:16],
+                    expires_at=expired_row["expires_at"],
+                    current_time=current_time,
+                )
             return None
 
         try:
-            return json.loads(row["value"])
+            result = json.loads(row["value"])
+            logger.debug(
+                "cache_get_success",
+                key=key[:16],
+                expires_at=row["expires_at"],
+            )
+            return result
         except json.JSONDecodeError:
-            logger.warning("cache_json_decode_error", key=key)
+            logger.warning("cache_json_decode_error", key=key[:16])
             return None
 
     def set(
@@ -158,7 +178,8 @@ class SQLiteCache(CacheBackend):
         """Set a value in cache with TTL."""
         conn = self._get_connection()
         ttl = ttl if ttl is not None else self.default_ttl
-        expires_at = time.time() + ttl if ttl > 0 else None
+        current_time = time.time()
+        expires_at = current_time + ttl if ttl > 0 else None
 
         conn.execute(
             """
@@ -166,9 +187,16 @@ class SQLiteCache(CacheBackend):
                 (key, value, created_at, expires_at, cache_type)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (key, json.dumps(value), time.time(), expires_at, cache_type),
+            (key, json.dumps(value), current_time, expires_at, cache_type),
         )
         conn.commit()
+        logger.debug(
+            "cache_set_success",
+            key=key[:16],
+            cache_type=cache_type,
+            ttl=ttl,
+            expires_at=expires_at,
+        )
 
     def delete(self, key: str) -> None:
         """Delete a value from cache."""
@@ -286,9 +314,22 @@ class CacheManager:
         result = self.backend.get(key)
         if result:
             self._stats["llm_hits"] += 1
-            logger.debug("llm_cache_hit", model=model, text_len=len(text))
+            logger.info(
+                "llm_cache_hit",
+                model=model,
+                text_len=len(text),
+                text_hash=text_hash[:16],
+                key=key[:16],
+            )
         else:
             self._stats["llm_misses"] += 1
+            logger.info(
+                "llm_cache_miss",
+                model=model,
+                text_len=len(text),
+                text_hash=text_hash[:16],
+                key=key[:16],
+            )
 
         return result
 
@@ -319,7 +360,13 @@ class CacheManager:
         else:
             self.backend.set(key, response, ttl=self.llm_ttl)
 
-        logger.debug("llm_cache_set", model=model, text_len=len(text))
+        logger.info(
+            "llm_cache_set",
+            model=model,
+            text_len=len(text),
+            text_hash=text_hash[:16],
+            key=key[:16],
+        )
 
     def get_openalex_result(
         self,

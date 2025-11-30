@@ -5,6 +5,7 @@ Provides text extraction with chunking capabilities
 for processing large PDFs with LLMs.
 """
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -73,7 +74,7 @@ class PDFExtractor:
 
         text = "\n".join(text_parts)
 
-        # Clean up text
+        # Clean up and normalize text for deterministic processing
         text = self._clean_text(text)
 
         # Create chunks if needed
@@ -84,6 +85,9 @@ class PDFExtractor:
             pages=page_count,
             chars=len(text),
             chunks=len(chunks) if chunks else 1,
+            text_hash=(
+                hashlib.sha256(text.encode()).hexdigest()[:16] if text else None
+            ),
         )
 
         return ExtractionResult(
@@ -95,18 +99,35 @@ class PDFExtractor:
         )
 
     def _clean_text(self, text: str) -> str:
-        """Clean extracted text."""
-        # Remove excessive whitespace
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        text = re.sub(r" {2,}", " ", text)
+        """
+        Clean extracted text and normalize for deterministic processing.
 
-        # Fix common OCR/extraction issues
+        This normalization ensures that the same PDF produces the same text
+        on different runs, which is critical for caching to work correctly.
+        """
+        # Fix common OCR/extraction issues first
         text = text.replace("\x00", "")  # Null bytes
         text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)  # Control chars
 
-        # Fix hyphenation at line breaks
+        # Fix hyphenation at line breaks (do this before other whitespace normalization)
         text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
 
+        # Normalize all types of line breaks to single newline
+        text = re.sub(r"\r\n|\r", "\n", text)
+
+        # Normalize whitespace: multiple spaces to single space
+        text = re.sub(r"[ \t]+", " ", text)
+
+        # Normalize multiple newlines: 3+ newlines to 2 newlines
+        text = re.sub(r"\n{3,}", "\n\n", text)
+
+        # Remove trailing whitespace from each line
+        # (but preserve intentional line breaks)
+        lines = text.split("\n")
+        lines = [line.rstrip() for line in lines]
+        text = "\n".join(lines)
+
+        # Final cleanup: remove leading/trailing whitespace
         return text.strip()
 
     def _create_chunks(self, text: str) -> list[str]:

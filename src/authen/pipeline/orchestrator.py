@@ -73,7 +73,8 @@ class Pipeline:
         # Initialize cache if enabled
         self._cache: CacheManager | None = None
         if config.cache_enabled:
-            db_path = config.cache_db_path or ".authen_cache.db"
+            # Use the configured path, or default to .db/cache.db
+            db_path = config.cache_db_path or ".db/cache.db"
             backend = SQLiteCache(
                 db_path=db_path,
                 default_ttl=config.cache_openalex_ttl,

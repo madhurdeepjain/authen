@@ -377,6 +377,13 @@ class ReferenceParser:
                 next_pos = end_pos
             current_pos = next_pos
 
+        logger.debug(
+            "chunking_complete",
+            text_len=len(text),
+            chunk_count=len(chunks),
+            chunk_sizes=[len(c) for c in chunks[:5]],  # Log first 5
+        )
+
         return chunks
 
     def _convert_references(self, result: ReferenceListOutput) -> list[ReferenceData]:
