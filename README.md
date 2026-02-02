@@ -29,7 +29,7 @@ Use [uv](https://docs.astral.sh/uv/) for dependency management and execution.
 
 ```bash
 # Clone the repository
-git clone <your-repo-url>
+git clone https://github.com/madhurdeepjain/authen
 cd authen
 
 # Create and activate a virtual environment managed by uv
@@ -166,4 +166,4 @@ The OpenAlex validation module implements proper rate limiting:
 
 ## License
 
-MIT License
+MIT
